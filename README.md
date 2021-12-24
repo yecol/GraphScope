@@ -370,6 +370,7 @@ make graphscope-docs
 
 # to open preview on local
 open docs/_build/latest/html/index.html
+testing.
 ```
 
 The latest version of online documentation can be found at https://graphscope.io/docs
