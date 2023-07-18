@@ -35,9 +35,14 @@ jobs:
       if: always()
       with:
         message: |
-          **Howdie!**
+          ** Checking whether this PR follows commit convention and well documented. **
+        message-success: |
+          ** Check Passed! **
+          This PR follows commit convention and well documented (if applicable).
         message-failure: |
           Uh oh!
+          - Please check that your PR's title is following the [convention](https://www.conventionalcommits.org/en/v1.0.0/#summary). 
+          - Please check that if the PR is a **feat** but lacks corresponding documentations.
 
     - uses: dorny/paths-filter@v2
       id: changes
