@@ -60,6 +60,7 @@ jobs:
             perf # A code change that improves performance
             refactor # A code change that neither fixes a bug nor adds a feature
             test  # Adding missing tests or correcting existing tests
+            chore: # updating grunt tasks etc; no production code change
           # Scopes allowed (newline-delimited).
           scopes: |
             core
@@ -92,10 +93,15 @@ jobs:
         message: |
           Thank you for opening this pull request! 👋🏼
           
-          We require pull request titles to follow the [Conventional Commits specification](https://www.conventionalcommits.org/en/v1.0.0/) and it looks like your proposed title needs to be adjusted.
+          We require PR titles to follow the [Conventional Commits specification](https://www.conventionalcommits.org/en/v1.0.0/),    
+          which in the format of `<type>(<scope>): <description>`. e.g., 
+            - fix: Correct typo
+            - feat(interactive): Add support for `g.V().outE().inV()`
+            - refactor!: Drop support for Python 3.8
+            - feat(analytical): Add delta-version for PageRank
+          > Note that since pull request titles only have a single line, you have to use ! to indicate breaking changes.
 
-          Details:
-            
+          Details:  
           ```
           ${{ steps.pr-convention.outputs.error_message }}
           ```
