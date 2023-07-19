@@ -37,6 +37,12 @@ jobs:
         filters: |
           src:
             - 'docs/**'
+    
+    - uses: actions-ecosystem/action-regex-match@v2
+      id: pr-regex-match
+      with:
+        text: ${{ github.event.pull_request.title }}
+        regex: 'feat.*'
 
     - uses: amannn/action-semantic-pull-request@v5
       id: pr-convention
@@ -79,30 +85,37 @@ jobs:
             bot
             ignore-semantic-pull-request
 
-    - uses: actions-ecosystem/action-regex-match@v2
-      id: pr-regex-match
+    - uses: marocchino/sticky-pull-request-comment@v2
+      if: always() && (steps.pr-convention.outputs.error_message != null)
       with:
-        text: ${{ github.event.pull_request.title }}
-        regex: 'feat.*'
-
-    - uses: mshick/add-pr-comment@v2
-      if: ${{ steps.pr-convention.outputs.error_message !='' || (steps.pr-regex-match.outputs.match != '' && steps.doc-changes.outputs.src == 'false') }}
-      with:
+        header: pr-title-lint-error
         message: |
-          **Checking**
-          Whether this PR follows commit convention and is well documented. **
-        message-success: |
-          ✅ **Check Passed!**
-          This PR follows commit convention and is well documented (if applicable).
-        message-failure: |
-          ❌ **Uh oh!**
-          - Please check that your PR's title is following the [convention](https://www.conventionalcommits.org/en/v1.0.0/#summary). 
-          - Please check that if the PR is a **feat** but lacks corresponding documentations.
+          Thank you for opening this pull request! 👋🏼
+          
+          We require pull request titles to follow the [Conventional Commits specification](https://www.conventionalcommits.org/en/v1.0.0/) and it looks like your proposed title needs to be adjusted.
 
           Details:
+            
           ```
-            ${{ steps.pr-convention.outputs.error_message }}
+          ${{ steps.pr-convention.outputs.error_message }}
           ```
+
+    # Delete a previous comment when the issue has been resolved
+    - if: ${{ steps.pr-convention.outputs.error_message == null }}
+      uses: marocchino/sticky-pull-request-comment@v2
+      with:   
+        header: pr-title-lint-error
+        delete: true
+
+    - if: ${{ steps.pr-regex-match.outputs.match != '' && steps.doc-changes.outputs.src == 'false' }}
+      uses: marocchino/sticky-pull-request-comment@v2
+      with:
+        header: lack-documentation
+        message: |
+          ❌ **Uh oh!**
+          We suggest that a PR with type `feat` should has corresponding documentations.
+          If you believe this PR could be merged without documentation, please add `yecol` as an extra reviewer for confirmation.
+          Thank you!
 
     - name: Setup Java11
       uses: actions/setup-java@v3
