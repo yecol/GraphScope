@@ -32,14 +32,59 @@ jobs:
         fetch-depth: 0
     
     - uses: dorny/paths-filter@v2
-      id: changes
+      id: doc-changes
       with:
         filters: |
           src:
             - 'docs/**'
 
+    - uses: amannn/action-semantic-pull-request@v5
+      id: pr-convention
+      with:
+          # Types allowed (newline-delimited).
+          # Default: https://github.com/commitizen/conventional-commit-types
+          types: |
+            build # Changes that affect the build system or external dependencies (example scopes: gulp, broccoli, npm)
+            ci # Changes to our CI configuration files and scripts (examples: CircleCi, SauceLabs)
+            docs # Documentation only changes
+            feat # A new feature
+            fix # A bug fix
+            perf # A code change that improves performance
+            refactor # A code change that neither fixes a bug nor adds a feature
+            test  # Adding missing tests or correcting existing tests
+          # Scopes allowed (newline-delimited).
+          scopes: |
+            core
+            python
+            coordinator
+            one
+            interactive
+            insight
+            analytical
+            learning
+          # A scope can be not provided.
+          requireScope: false
+          # Configure which scopes are disallowed in PR titles (newline-delimited).
+          # For instance by setting the value below, `chore(release): ...` (lowercase)
+          # and `ci(e2e,release): ...` (unknown scope) will be rejected.
+          # These are regex patterns auto-wrapped in `^ $`.
+          disallowScopes: |
+            release
+            [A-Z]+
+          # If the PR contains one of these newline-delimited labels, the
+          # validation is skipped. 
+          ignoreLabels: |
+            bot
+            ignore-semantic-pull-request
+
+    - uses: actions-ecosystem/action-regex-match@v2
+      id: pr-regex-match
+      with:
+        text: ${{ github.event.pull_request.title }}
+        regex: 'feat.*'
+
     - uses: mshick/add-pr-comment@v2
-      if: [[ ${{github.event.pull_request.title}} =~ : ]] && ([[ ${{github.event.pull_request.title}} =~ feat ]]? ${{steps.changes.outputs.src}} == 'true' : true)
+      if: ${{ steps.pr-convention.outputs.error_message !='' || (steps.pr-regex-match.outputs.match != '' && steps.doc-changes.outputs.src == 'false') }}
       with:
         message: |
           **Checking**
@@ -51,6 +96,11 @@ jobs:
           ❌ **Uh oh!**
           - Please check that your PR's title is following the [convention](https://www.conventionalcommits.org/en/v1.0.0/#summary). 
           - Please check that if the PR is a **feat** but lacks corresponding documentations.
+
+          Details:
+          ```
+            ${{ steps.pr-convention.outputs.error_message }}
+          ```
 
     - name: Setup Java11
       uses: actions/setup-java@v3
