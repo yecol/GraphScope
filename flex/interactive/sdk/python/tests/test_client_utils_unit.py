@@ -11,7 +11,7 @@ def _load_client_utils_module():
     current = Path(__file__).resolve()
     repo_root = None
     for candidate in current.parents:
-        if (candidate / ".git").exists():
+        if (candidate / "VERSION").exists() and (candidate / "flex").exists():
             repo_root = candidate
             break
     if repo_root is None:
@@ -32,41 +32,59 @@ def _load_client_utils_module():
     return module
 
 
-CLIENT_UTILS = _load_client_utils_module()
-InputFormat = CLIENT_UTILS.InputFormat
-append_format_byte = CLIENT_UTILS.append_format_byte
+@pytest.fixture(scope="module")
+def client_utils():
+    return _load_client_utils_module()
 
 
-def test_input_format_enum_values_are_stable():
+def test_input_format_enum_values_are_stable(client_utils):
+    InputFormat = client_utils.InputFormat
     assert InputFormat.CPP_ENCODER.value == 0
     assert InputFormat.CYPHER_JSON.value == 1
     assert InputFormat.CYPHER_PROTO_ADHOC.value == 2
     assert InputFormat.CYPHER_PROTO_PROCEDURE.value == 3
 
 
-@pytest.mark.parametrize(
-    "payload,input_format",
-    [
-        ("hello", InputFormat.CPP_ENCODER),
-        ("{}", InputFormat.CYPHER_JSON),
-        ("adhoc_query", InputFormat.CYPHER_PROTO_ADHOC),
-        ("procedure_call", InputFormat.CYPHER_PROTO_PROCEDURE),
-        ("", InputFormat.CPP_ENCODER),
-        ("你好", InputFormat.CYPHER_JSON),
-    ],
+@pytest.fixture(
+    params=[
+        ("hello", "CPP_ENCODER"),
+        ("{}", "CYPHER_JSON"),
+        ("adhoc_query", "CYPHER_PROTO_ADHOC"),
+        ("procedure_call", "CYPHER_PROTO_PROCEDURE"),
+        ("", "CPP_ENCODER"),
+        ("你好", "CPP_ENCODER"),
+        ("你好", "CYPHER_JSON"),
+        ("你好", "CYPHER_PROTO_ADHOC"),
+        ("你好", "CYPHER_PROTO_PROCEDURE"),
+    ]
 )
-def test_append_format_byte_appends_expected_format_suffix(payload, input_format):
-    result = append_format_byte(payload, input_format=input_format)
+def payload_and_format(request, client_utils):
+    payload, format_name = request.param
+    return payload, getattr(client_utils.InputFormat, format_name)
+
+
+def test_append_format_byte_appends_expected_format_suffix(
+    payload_and_format, client_utils
+):
+    payload, input_format = payload_and_format
+    result = client_utils.append_format_byte(payload, input_format=input_format)
     assert result[:-1] == payload.encode()
     assert result[-1] == input_format.value
 
 
-def test_append_format_byte_rejects_bytes_input():
+def test_append_format_byte_rejects_bytes_input(client_utils):
     with pytest.raises(TypeError):
-        append_format_byte(b"hello", input_format=InputFormat.CPP_ENCODER)
+        client_utils.append_format_byte(
+            b"hello", input_format=client_utils.InputFormat.CPP_ENCODER
+        )
 
 
-@pytest.mark.parametrize("bad_input_format", [None, 1, "cpp"])
-def test_append_format_byte_rejects_invalid_input_format(bad_input_format):
+def test_append_format_byte_rejects_none_input_format(client_utils):
     with pytest.raises(AttributeError):
-        append_format_byte("hello", input_format=bad_input_format)
+        client_utils.append_format_byte("hello", input_format=None)
+
+
+@pytest.mark.parametrize("bad_input_format", [1, "cpp"])
+def test_append_format_byte_rejects_non_enum_input_format(client_utils, bad_input_format):
+    with pytest.raises(AttributeError):
+        client_utils.append_format_byte("hello", input_format=bad_input_format)
