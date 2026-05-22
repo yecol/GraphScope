@@ -145,7 +145,7 @@ jobs:
         fi
 
         pushd flex
-        # except for files end with act.h 
+        # except for files end with act.h
         find ./bin ./codegen ./engines ./storages ./engines ./tests ./utils ./otel -name "*.h" ! -name "*act.h" ! -name "*actg.h" | xargs clang-format -i --style=file
         find ./bin ./codegen ./engines ./storages ./engines ./tests ./utils ./otel -name "*.cc" ! -name "*act.cc" | xargs clang-format -i --style=file
         popd
