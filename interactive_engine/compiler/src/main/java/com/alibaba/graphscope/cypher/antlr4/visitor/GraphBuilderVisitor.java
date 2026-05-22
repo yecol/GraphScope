@@ -18,19 +18,30 @@ package com.alibaba.graphscope.cypher.antlr4.visitor;
 
 import com.alibaba.graphscope.common.antlr4.ExprUniqueAliasInfer;
 import com.alibaba.graphscope.common.antlr4.ExprVisitorResult;
-import com.alibaba.graphscope.common.ir.rel.GraphLogicalAggregate;
+import com.alibaba.graphscope.common.ir.rel.DummyTableScan;
+import com.alibaba.graphscope.common.ir.rel.GraphProcedureCall;
+import com.alibaba.graphscope.common.ir.rel.ddl.GraphTableModify;
+import com.alibaba.graphscope.common.ir.rel.graph.GraphLogicalGetV;
+import com.alibaba.graphscope.common.ir.rel.graph.GraphLogicalPathExpand;
+import com.alibaba.graphscope.common.ir.rel.type.TargetGraph;
 import com.alibaba.graphscope.common.ir.rel.type.group.GraphAggCall;
 import com.alibaba.graphscope.common.ir.rex.RexTmpVariableConverter;
-import com.alibaba.graphscope.common.ir.rex.RexVariableAliasCollector;
 import com.alibaba.graphscope.common.ir.tools.GraphBuilder;
 import com.alibaba.graphscope.common.ir.tools.config.GraphOpt;
 import com.alibaba.graphscope.grammar.CypherGSBaseVisitor;
 import com.alibaba.graphscope.grammar.CypherGSParser;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Supplier;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 
+import org.apache.calcite.plan.GraphOptCluster;
 import org.apache.calcite.plan.RelOptUtil;
+import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.rel.RelNode;
+import org.apache.calcite.rel.core.TableModify;
+import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.rex.RexSubQuery;
@@ -41,26 +52,95 @@ import org.checkerframework.checker.nullness.qual.Nullable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 public class GraphBuilderVisitor extends CypherGSBaseVisitor<GraphBuilder> {
     private final GraphBuilder builder;
     private final ExpressionVisitor expressionVisitor;
     private final ExprUniqueAliasInfer aliasInfer;
+    private final Supplier<ProcedureCallVisitor> procedureCallVisitorSupplier;
 
-    public GraphBuilderVisitor(GraphBuilder builder) {
-        this(builder, new ExprUniqueAliasInfer());
+    public GraphBuilderVisitor(
+            GraphBuilder builder, Supplier<ProcedureCallVisitor> procedureCallVisitorSupplier) {
+        this(builder, new ExprUniqueAliasInfer(), procedureCallVisitorSupplier);
     }
 
-    public GraphBuilderVisitor(GraphBuilder builder, ExprUniqueAliasInfer aliasInfer) {
+    public GraphBuilderVisitor(
+            GraphBuilder builder,
+            ExprUniqueAliasInfer aliasInfer,
+            Supplier<ProcedureCallVisitor> procedureCallVisitorSupplier) {
         this.builder = Objects.requireNonNull(builder);
         this.aliasInfer = Objects.requireNonNull(aliasInfer);
         this.expressionVisitor = new ExpressionVisitor(this);
+        this.procedureCallVisitorSupplier = Objects.requireNonNull(procedureCallVisitorSupplier);
+    }
+
+    @VisibleForTesting
+    public GraphBuilderVisitor(GraphBuilder builder) {
+        this(builder, new ExprUniqueAliasInfer(), () -> null);
+    }
+
+    @Override
+    public GraphBuilder visitOC_UnionCallSubQuery(CypherGSParser.OC_UnionCallSubQueryContext ctx) {
+        List<RelNode> branches = Lists.newArrayList();
+        for (int i = 0; i < ctx.oC_CallSubQuery().size(); ++i) {
+            CypherGSParser.OC_CallSubQueryContext callSubQuery = ctx.oC_CallSubQuery(i);
+            if (callSubQuery != null) {
+                branches.add(new CallSubQueryVisitor(this.builder).visit(callSubQuery));
+            }
+        }
+        Preconditions.checkArgument(
+                branches.size() > 1, "union should have at least two branches in cypher queries");
+        builder.build();
+        for (RelNode branch : branches) {
+            builder.push(branch);
+        }
+        return (GraphBuilder) builder.union(true, branches.size());
+    }
+
+    @Override
+    public GraphBuilder visitOC_StandaloneCall(CypherGSParser.OC_StandaloneCallContext ctx) {
+        ProcedureCallVisitor procedureCallVisitor = procedureCallVisitorSupplier.get();
+        Preconditions.checkArgument(
+                procedureCallVisitor != null,
+                "cannot do procedure call without procedure call visitor");
+        RexNode procedure = procedureCallVisitor.visitOC_StandaloneCall(ctx);
+        return builder.push(
+                new GraphProcedureCall(
+                        builder.getCluster(),
+                        RelTraitSet.createEmpty(),
+                        builder.build(),
+                        procedure));
     }
 
     @Override
     public GraphBuilder visitOC_Cypher(CypherGSParser.OC_CypherContext ctx) {
         return visitOC_Statement(ctx.oC_Statement());
+    }
+
+    @Override
+    public GraphBuilder visitOC_Unwind(CypherGSParser.OC_UnwindContext ctx) {
+        RexNode expr = expressionVisitor.visitOC_Expression(ctx.oC_Expression()).getExpr();
+        String alias = Utils.getAliasName(ctx.oC_Variable());
+        return builder.unfold(expr, alias);
+    }
+
+    @Override
+    public GraphBuilder visitOC_Create(CypherGSParser.OC_CreateContext ctx) {
+        if (builder.size() == 0) {
+            builder.push(
+                    new DummyTableScan((GraphOptCluster) builder.getCluster(), ImmutableList.of()));
+        }
+        List<TargetGraph> targets = new TargetGraphVisitor(this).visit(ctx.oC_Pattern());
+        targets.forEach(
+                target -> {
+                    TableModify insert =
+                            new GraphTableModify.Insert(
+                                    builder.getCluster(), builder.build(), target);
+                    builder.push(insert);
+                });
+        return builder;
     }
 
     @Override
@@ -87,13 +167,52 @@ public class GraphBuilderVisitor extends CypherGSBaseVisitor<GraphBuilder> {
     }
 
     @Override
+    public GraphBuilder visitOC_AnonymousPatternPart(
+            CypherGSParser.OC_AnonymousPatternPartContext ctx) {
+        visitOC_PatternElement(ctx.oC_PatternElement());
+        if (ctx.oC_ShortestPathOption() == null) return builder;
+        if (builder.size() > 0) {
+            RelNode top = builder.peek();
+            if (top instanceof GraphLogicalGetV
+                    && top.getInputs().size() == 1
+                    && top.getInput(0) instanceof GraphLogicalPathExpand) {
+                GraphLogicalGetV getV = (GraphLogicalGetV) top;
+                GraphLogicalPathExpand path = (GraphLogicalPathExpand) getV.getInput(0);
+                boolean isAll = ctx.oC_ShortestPathOption().ALL() != null;
+                GraphLogicalPathExpand shortestPath =
+                        GraphLogicalPathExpand.create(
+                                (GraphOptCluster) path.getCluster(),
+                                ImmutableList.of(),
+                                path.getInput(),
+                                path.getExpand(),
+                                path.getGetV(),
+                                path.getOffset(),
+                                path.getFetch(),
+                                path.getResultOpt(),
+                                isAll
+                                        ? GraphOpt.PathExpandPath.ALL_SHORTEST
+                                        : GraphOpt.PathExpandPath.ANY_SHORTEST,
+                                path.getUntilCondition(),
+                                path.getAliasName(),
+                                path.getStartAlias(),
+                                path.isOptional());
+                GraphLogicalGetV shortestGetV =
+                        getV.copy(getV.getTraitSet(), ImmutableList.of(shortestPath));
+                builder.build();
+                builder.push(shortestGetV);
+            }
+        }
+        return builder;
+    }
+
+    @Override
     public GraphBuilder visitOC_PatternElementChain(
             CypherGSParser.OC_PatternElementChainContext ctx) {
         CypherGSParser.OC_RelationshipPatternContext relationCtx = ctx.oC_RelationshipPattern();
         CypherGSParser.OC_RangeLiteralContext literalCtx =
                 relationCtx.oC_RelationshipDetail().oC_RangeLiteral();
         // path_expand
-        if (literalCtx != null && literalCtx.oC_IntegerLiteral().size() > 1) {
+        if (literalCtx != null && literalCtx.oC_IntegerLiteral().size() >= 1) {
             builder.pathExpand(
                     new PathExpandBuilderVisitor(this)
                             .visitOC_PatternElementChain(ctx)
@@ -181,6 +300,10 @@ public class GraphBuilderVisitor extends CypherGSBaseVisitor<GraphBuilder> {
 
     @Override
     public GraphBuilder visitOC_With(CypherGSParser.OC_WithContext ctx) {
+        if (builder.size() == 0) {
+            builder.push(
+                    new DummyTableScan((GraphOptCluster) builder.getCluster(), ImmutableList.of()));
+        }
         visitOC_ProjectionBody(ctx.oC_ProjectionBody());
         return (ctx.oC_Where() != null) ? visitOC_Where(ctx.oC_Where()) : builder;
     }
@@ -191,9 +314,8 @@ public class GraphBuilderVisitor extends CypherGSBaseVisitor<GraphBuilder> {
         List<RexNode> keyExprs = new ArrayList<>();
         List<String> keyAliases = new ArrayList<>();
         List<RelBuilder.AggCall> aggCalls = new ArrayList<>();
-        List<RexNode> extraExprs = new ArrayList<>();
-        List<String> extraAliases = new ArrayList<>();
-        if (isGroupPattern(ctx, keyExprs, keyAliases, aggCalls, extraExprs, extraAliases)) {
+        AtomicReference<ColumnOrder> columnManagerRef = new AtomicReference<>();
+        if (isGroupPattern(ctx, keyExprs, keyAliases, aggCalls, columnManagerRef)) {
             RelBuilder.GroupKey groupKey;
             if (keyExprs.isEmpty()) {
                 groupKey = builder.groupKey();
@@ -201,39 +323,25 @@ public class GraphBuilderVisitor extends CypherGSBaseVisitor<GraphBuilder> {
                 groupKey = builder.groupKey(keyExprs, keyAliases);
             }
             builder.aggregate(groupKey, aggCalls);
-            if (!extraExprs.isEmpty()) {
+            RelDataType inputType = builder.peek().getRowType();
+            List<ColumnOrder.Field> originalFields =
+                    inputType.getFieldList().stream()
+                            .map(
+                                    k ->
+                                            new ColumnOrder.Field(
+                                                    builder.variable(k.getName()), k.getName()))
+                            .collect(Collectors.toList());
+            List<ColumnOrder.Field> newFields = columnManagerRef.get().getFields(inputType);
+            if (!originalFields.equals(newFields)) {
+                List<RexNode> extraExprs = new ArrayList<>();
+                List<@Nullable String> extraAliases = new ArrayList<>();
                 RexTmpVariableConverter converter = new RexTmpVariableConverter(true, builder);
-                extraExprs =
-                        extraExprs.stream()
-                                .map(k -> k.accept(converter))
-                                .collect(Collectors.toList());
-                List<RexNode> projectExprs = Lists.newArrayList();
-                List<String> projectAliases = Lists.newArrayList();
-                List<String> extraVarNames = Lists.newArrayList();
-                RexVariableAliasCollector<String> varNameCollector =
-                        new RexVariableAliasCollector<>(
-                                true,
-                                v -> {
-                                    String[] splits = v.getName().split("\\.");
-                                    return splits[0];
-                                });
-                extraExprs.forEach(k -> extraVarNames.addAll(k.accept(varNameCollector)));
-                GraphLogicalAggregate aggregate = (GraphLogicalAggregate) builder.peek();
-                aggregate
-                        .getRowType()
-                        .getFieldList()
-                        .forEach(
-                                field -> {
-                                    if (!extraVarNames.contains(field.getName())) {
-                                        projectExprs.add(builder.variable(field.getName()));
-                                        projectAliases.add(field.getName());
-                                    }
-                                });
-                for (int i = 0; i < extraExprs.size(); ++i) {
-                    projectExprs.add(extraExprs.get(i));
-                    projectAliases.add(extraAliases.get(i));
-                }
-                builder.project(projectExprs, projectAliases, false);
+                newFields.forEach(
+                        k -> {
+                            extraExprs.add(k.getExpr().accept(converter));
+                            extraAliases.add(k.getAlias());
+                        });
+                builder.project(extraExprs, extraAliases, false);
             }
         } else if (isDistinct) {
             builder.aggregate(builder.groupKey(keyExprs, keyAliases));
@@ -254,21 +362,28 @@ public class GraphBuilderVisitor extends CypherGSBaseVisitor<GraphBuilder> {
             List<RexNode> keyExprs,
             List<String> keyAliases,
             List<RelBuilder.AggCall> aggCalls,
-            List<RexNode> extraExprs,
-            List<String> extraAliases) {
+            AtomicReference<ColumnOrder> columnManagerRef) {
+        List<ColumnOrder.FieldSupplier> fieldSuppliers = Lists.newArrayList();
         for (CypherGSParser.OC_ProjectionItemContext itemCtx :
                 ctx.oC_ProjectionItems().oC_ProjectionItem()) {
             ExprVisitorResult item = expressionVisitor.visitOC_Expression(itemCtx.oC_Expression());
-            String alias = (itemCtx.AS() == null) ? null : itemCtx.oC_Variable().getText();
+            String alias =
+                    (itemCtx.AS() == null) ? null : Utils.getAliasName(itemCtx.oC_Variable());
             if (item.getAggCalls().isEmpty()) {
+                int ordinal = keyExprs.size();
+                fieldSuppliers.add(new ColumnOrder.FieldSupplier.Default(builder, () -> ordinal));
                 keyExprs.add(item.getExpr());
                 keyAliases.add(alias);
             } else {
                 if (item.getExpr() instanceof RexCall) {
-                    extraExprs.add(item.getExpr());
-                    extraAliases.add(alias);
+                    fieldSuppliers.add(
+                            (RelDataType type) -> new ColumnOrder.Field(item.getExpr(), alias));
                     aggCalls.addAll(item.getAggCalls());
                 } else if (item.getAggCalls().size() == 1) { // count(a.name)
+                    int ordinal = aggCalls.size();
+                    fieldSuppliers.add(
+                            new ColumnOrder.FieldSupplier.Default(
+                                    builder, () -> keyExprs.size() + ordinal));
                     GraphAggCall original = (GraphAggCall) item.getAggCalls().get(0);
                     aggCalls.add(
                             new GraphAggCall(
@@ -282,6 +397,7 @@ public class GraphBuilderVisitor extends CypherGSBaseVisitor<GraphBuilder> {
                 }
             }
         }
+        columnManagerRef.set(new ColumnOrder(fieldSuppliers));
         return !aggCalls.isEmpty();
     }
 

@@ -19,6 +19,7 @@
 import datetime
 import http.client
 import json
+import logging
 import time
 import urllib.parse
 
@@ -35,11 +36,13 @@ from gscoordinator.flex.core.stoppable_thread import StoppableThread
 from gscoordinator.flex.core.utils import encode_datetime
 from gscoordinator.flex.models import JobStatus
 
+logger = logging.getLogger("graphscope")
 
 class FetchDataloadingJobStatus(object):
-    def __init__(self, graph, status: JobStatus):
+    def __init__(self, graph, status: JobStatus, project=PROJECT):
         self._graph = graph
         self._status = status
+        self._project = project
         self._fetching_thread = StoppableThread(target=self._fetch_impl, args=())
         self._fetching_thread.daemon = True
         self._fetching_thread.start()
@@ -50,7 +53,7 @@ class FetchDataloadingJobStatus(object):
         s = self._status.to_dict()
         conn = http.client.HTTPConnection(STUDIO_WRAPPER_ENDPOINT)
         params = urllib.parse.urlencode(
-            {"jobId": s["id"], "project": PROJECT, "baseId": BASEID}
+            {"jobId": s["id"], "project": self._project, "baseId": BASEID}
         )
         while not self._fetching_thread.stopped():
             try:
@@ -82,7 +85,7 @@ class FetchDataloadingJobStatus(object):
                     s["log"] = rlt["message"]
             except Exception as e:
                 s["status"] = "FAILED"
-                s["log"] = "Internel error: {0}".format(str(e))
+                s["log"] = "Internal error: {0}".format(str(e))
             finally:
                 self._status = JobStatus.from_dict(s)
                 time.sleep(5)
@@ -292,6 +295,7 @@ class DataloadingJobScheduler(Scheduler):
                 location = data_source["inputs"][0]
                 load_from_odps = load_from_odps and location.startswith("odps://")
 
+            project = PROJECT
             if not load_from_odps:
                 status = self.import_data_from_local_file()
             else:
@@ -299,6 +303,7 @@ class DataloadingJobScheduler(Scheduler):
                 configini = convert_to_configini(
                     self._graph, self._ds_manager, self._config
                 )
+                project = configini["project"]
                 # conn
                 conn = http.client.HTTPConnection(STUDIO_WRAPPER_ENDPOINT)
                 conn.request(
@@ -307,12 +312,14 @@ class DataloadingJobScheduler(Scheduler):
                     json.dumps(configini),
                     headers={"Content-type": "application/json"},
                 )
-                r = conn.getresponse()
-                if r.status > 400 and r.status < 600:
+                resp = conn.getresponse()
+                data = resp.read().decode("utf-8")
+                if resp.status != 200:
+                    logger.error("Failed to submit dataloading job, code: ", resp.status, ", data: ", data)
                     raise RuntimeError(
-                        "Failed to submit dataloading job: " + r.read().decode("utf-8")
+                        "Failed to submit dataloading job, code: ", resp.status, ", data: ", data
                     )
-                rlt = json.loads(r.read().decode("utf-8"))
+                rlt = json.loads(data)
                 if rlt["success"]:
                     self._jobid = rlt["data"]
                     status = self.generate_job_status(
@@ -325,6 +332,7 @@ class DataloadingJobScheduler(Scheduler):
                         log=rlt["message"],
                     )
         except Exception as e:
+            logger.error("Exception occurred: ", str(e))
             status = self.generate_job_status(
                 status="FAILED", end_time=datetime.datetime.now(), log=str(e)
             )
@@ -332,4 +340,4 @@ class DataloadingJobScheduler(Scheduler):
             if isinstance(conn, http.client.HTTPConnection):
                 conn.close()
         # register job status
-        self._job_status[self.jobid] = FetchDataloadingJobStatus(self._graph, status)
+        self._job_status[self.jobid] = FetchDataloadingJobStatus(self._graph, status, project)

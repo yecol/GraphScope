@@ -15,12 +15,15 @@ Below is a list of all configurable items:
 | admin-port       | 7777    | The port of the interactive admin service       | v0.3          |
 | storedproc-port   | 10000    | The port of the interactive stored procedure service      | v0.3          |
 | cypher-port       | 7687    | The port of the cypher service       | v0.3          |
+| config | None    | The customized configuration file for engine interactive service | v0.4   |
+| image-tag       | latest    | The version of the interactive you want to install | v0.5 |
+| set             | None      | Specify additional properties for Interactive via the command line to override any corresponding settings in the configuration file if they are present | v0.5 |
 <!-- | gremlin-port       | None    | The port of the gremlin service       | v0.3          | -->
 
 
 <!-- *Note: The default value for `gremlin-port` is `None`, meaning the Gremlin service will not be initiated by default. -->
 
-### Default Ports
+### Ports
 
 By default, Interactive will launch the following services on these ports:
 
@@ -43,94 +46,90 @@ The Gremlin service is disabled by default. To enable it, add the `--gremlin-por
 gsctl instance deploy --type interactive --coordinator-port 8081 --admin-port 7778 --cypher-port 7688 --storedproc-port 10001 --gremlin-port 8183
 ``` -->
 
+### Service Configuration
 
-<!-- Those content are commented but not deleted, since we will support those configurations later.
-> TODO: Currently `gsctl` doesn't support the following command!
+By default, `Interactive` will initialize the service with its default settings.
+However, GraphScope Interactive is designed to be flexible and adaptable to your specific needs. This means you can tailor the service's behavior using custom configurations.
 
-Starting your GraphScope Interactive service can be straightforward, as demonstrated in our [getting_started](./getting_started.md) guide. By default, executing the command:
 
-```bash
-gsctl use GRAPH <name>
-```
-
-will initialize the service with its default settings. However, GraphScope is designed to be flexible and adaptable to your specific needs. This means you can tailor the service's behavior using custom configurations.
-
-## Customizing Your Service Configuration
-To customize the service's settings, you can provide a YAML configuration file. This file allows you to specify various parameters, from directory paths to log levels, ensuring the service aligns with your requirements. To use a custom configuration, simply pass the YAML file to the command as follows:
+#### Customizing Interactive Engine Service Configuration
+To customize the service's settings, you can provide a YAML configuration file `interactive_config.yaml`. This file allows you to specify various parameters, from directory paths to log levels, ensuring the service aligns with your requirements. To use a custom configuration, simply pass the YAML file to the command as follows:
 
 ```bash
-gsctl use GRAPH <name> -c ./engine_config.yaml
+gsctl instance deploy --type interactive --config ./interactive_config.yaml
 ```
 
-Note: Please be aware that you're not required to configure every option. Simply adjust the settings that are relevant to your needs. Any options left unconfigured will automatically adopt their default values, as detailed in the sections that follow.
-
-
-If you already have an Interactive service running and wish to apply a new set of configurations, a simple restart with the custom configuration is required. This ensures that the service updates its settings and operates according to your newly specified preferences.
-
-To restart the service with your custom configuration, use the following command:
-```bash
-gsctl service restart -c ./conf/engine_config.yaml
+```{note}
+Please be aware that you're not required to configure every option. Simply adjust the settings that are relevant to your needs. Any options left unconfigured will automatically adopt their default values, as detailed in the following sections.
 ```
-Remember, any changes made in the configuration file will only take effect after the service has been restarted with the updated file.
 
 
-
-## Sample Configuration
+##### Sample Configuration
 Here's a glimpse of what a typical YAML configuration file might look like:
 
 ```yaml
-log_level: INFO # default INFO
+log_level: INFO # default INFO, available(INFO,WARNING,ERROR,FATAL)
+verbose_level: 0 # default 0, should be a int in range [0,10]. 10 will verbose all logs
 compute_engine:
-  thread_num_per_worker: 1  # the number of shared workers, default 1
+  thread_num_per_worker: 1  # the number of threads for each worker, default 1
 compiler:
   planner:
-  is_on: true
-  opt: RBO
-  rules:
-    - FilterMatchRule
-    - FilterIntoJoinRule
-    - NotExistToAntiJoinRule
+    is_on: true
+    opt: RBO
+    rules:
+      - FilterMatchRule
+      - FilterIntoJoinRule
+      - NotExistToAntiJoinRule
   query_timeout: 20000  # query timeout in milliseconds, default 20000
-  endpoint:
-    default_listen_address: localhost
-    bolt_connector: # cypher query endpoint 
-      disabled: false # disable cypher endpoint or not.
-      port: 7687
-    gremlin_connector: # gremlin query endpoint 
-      disabled: false # disable gremlin endpoint or not.
-      port: 8182
-http_service:
-  default_listen_address: localhost
-  admin_port: 7777
-  query_port: 10000
 ```
 
+#### Sharded Service
 
-## Available Configurations
-For configurations associated with the root directory, we do not accept relative paths to ensure consistency.
+The core query engine of Interactive is developed using [hiactor](https://github.com/alibaba/hiactor) which is based on [Seastar](https://github.com/scylladb/seastar). Seastar operates on a Share-nothing SMP architecture, where each core functions autonomously, without sharing memory, data structures, or CPU resources. Each Seastar core is commonly referred to as a shard.
 
-### Service configurations
+Leveraging the future-promise API and a Cooperative micro-task scheduler, the sharded service significantly boosts performance and throughput. However, this setup can also lead to potential issues: an incoming request might experience delays even if some shards are idle, due to the shard scheduling algorithm potentially routing it to a busy shard. This can be problematic in Interactive, which typically hosts two services—`QueryService` and `AdminService`. Crucially, `AdminService` must remain responsive even when `QueryService` is under heavy load.
+
+As discussed in [discussion-4409](https://github.com/alibaba/GraphScope/discussions/4409), one potential solution is to allocate different shards for handling distinct requests. This approach presents three scenarios:
+
+- **Routine Scenario**: Here, users may execute both complex and simple queries, thus dedicating a shard exclusively for admin requests. However, since this shard won’t process queries, overall system performance may decline.
+  
+- **Performance-Critical Scenario**: In this scenario, users aim for peak performance from Interactive. All shards are used to process query requests, with admin requests being handled concurrently by them. Consequently, there may be instances of request delays.
+
+By default, Interactive is configured for routine with the following:
+
+```yaml
+http_service:
+  sharding_mode: exclusive # In exclusive mode, a shard is exclusively reserved for admin requests. In cooperative mode, both query and admin requests can be processed by any shard.
+```
+
+By changing to `sharding_mode: cooperative`, you can fully utilize all the computational power for the QueryService.
+
+
+##### Available Configurations
 
 In this following table, we use the `.` notation to represent the hierarchy within the `YAML` structure.
 
 
 | PropertyName       | Default   | Meaning |  Since Version |
 | --------           | --------  | -------- |-----------  |
-| log_level     |  INFO   | The level of database log, INFO/DEBUG/ERROR | 0.0.1 |
-|default_graph  | modern | The name of default graph on which to start the graph service. | 0.0.1 |
-| compute_engine.thread_num_per_worker | 1 | The number of threads will be used to process the queries. Increase the number can benefit the query throughput | 0.0.1 |
+| log_level     |  INFO   | The level of database log, INFO/WARNING/ERROR/FATAL | 0.0.1 |
+| verbose_level     |  0   | The verbose level of database log, should be a int | 0.0.3 |
+| compute_engine.thread_num_per_worker | 4 | The number of threads will be used to process the queries. Increase the number can benefit the query throughput | 0.0.1 |
+| compute_engine.wal_uri    | file://{GRAPH_DATA_DIR}/wal | The location where Interactive will store and access WALs. `GRAPH_DATA_DIR` is a placeholder that will be populated by Interactive. | 0.5 |
 | compiler.planner.is_on | true | Determines if query optimization is enabled for compiling Cypher queries  | 0.0.1 |
 | compiler.planner.opt | RBO | Specifies the optimizer to be used for query optimization. Currently, only the Rule-Based Optimizer (RBO) is supported | 0.0.1 |
 | compiler.planner.rules.FilterMatchRule | N/A | An optimization rule that pushes filter (`Where`) conditions into the `Match` clause | 0.0.1 |
 | compiler.planner.rules.FilterIntoJoinRule | N/A | A native Calcite optimization rule that pushes filter conditions to the Join participants before performing the join | 0.0.1 |
 | compiler.planner.rules.NotMatchToAntiJoinRule | N/A | An optimization rule that transforms a "not exist" pattern into an anti-join operation  | 0.0.1 |
-| compiler.endpoint.default_listen_address | localhost | The address for compiler endpoint to bind | 0.0.3 |
-| compiler.endpoint.bolt_connector.disabled | false | Whether to disable the cypher endpoint| 0.0.3 |
-| compiler.endpoint.bolt_connector.port | 7687 | The port for compiler's cypher endpoint.| 0.0.3 |
-| compiler.endpoint.gremlin_connector.disabled | true | Whether to disable the gremlin endpoint| 0.0.3 |
-| compiler.endpoint.gremlin_connector.port | 8182 | The port for compiler's cypher endpoint.| 0.0.3 |
-| http_service.default_listen_address | localhost | The address for http service to bind | 0.0.2 |
-| http_service.admin_port | 7777 | The port for admin service to listen on | 0.0.2 |
-| http_service.query_port | 10000 | The port for query service to listen on, for stored procedure queries, user can directory submit queries to query_port without compiler involved | 0.0.2 | -->
+| compiler.query_timeout  | 3000000   ｜ The maximum time for compiler to wait engine's reply, in `ms`  | 0.0.3 | 
+| http_service.sharding_mode | exclusive | The sharding mode for http service, In exclusive mode, one shard is reserved exclusively for service admin request. In cooperative, both query request and admin request could be served by any shard. | 0.5 |
+| http_service.max_content_length | 1GB | The maximum length of a http request that admin http service could handle | 0.5 |
+| storage.string_default_max_length | 256 | The default maximum size for a string field | 0.5 |
 
 
+#### TODOs
+
+We currently only allow service configuration during instance deployment. In the near future, we will support:
+
+- Graph-level configurations
+- Modifying service configurations

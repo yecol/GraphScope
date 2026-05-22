@@ -3,6 +3,7 @@
 ARG ARCH=amd64
 ARG REGISTRY=registry.cn-hongkong.aliyuncs.com
 ARG BUILDER_VERSION=latest
+ARG VINEYARD_VERSION=latest
 FROM $REGISTRY/graphscope/graphscope-dev:$BUILDER_VERSION-$ARCH AS builder
 
 ARG CI=false
@@ -19,10 +20,12 @@ RUN cd /home/graphscope/GraphScope/ && \
         cd python && \
         python3 -m pip install --user -r requirements.txt && \
         python3 setup.py bdist_wheel && \
-        export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/graphscope/GraphScope/learning_engine/graph-learn/graphlearn/built/lib && \
-        auditwheel repair dist/*.whl && \
-        python3 -m pip install wheelhouse/*.whl && \
-        cp wheelhouse/*.whl /home/graphscope/install/ && \
+        python3 -m pip install dist/*.whl && \
+        cp dist/*.whl /home/graphscope/install/ && \
+        # export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/graphscope/GraphScope/learning_engine/graph-learn/graphlearn/built/lib && \
+        # auditwheel repair dist/*.whl && \
+        # python3 -m pip install wheelhouse/*.whl && \
+        # cp wheelhouse/*.whl /home/graphscope/install/ && \
         cd ../coordinator && \
         python3 setup.py bdist_wheel && \
         cp dist/*.whl /home/graphscope/install/; \
@@ -35,9 +38,16 @@ FROM ubuntu:22.04 AS coordinator
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update -y && \
-    apt-get install -y sudo python3-pip openmpi-bin curl tzdata && \
+    apt-get install -y sudo python3-pip openmpi-bin curl locales tzdata netcat && \
+    locale-gen en_US.UTF-8 && \
     apt-get clean -y && \
     rm -rf /var/lib/apt/lists/*
+
+ENV LANG en_US.UTF-8
+ENV LANGUAGE en_US:en
+ENV LC_ALL en_US.UTF-8
+ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 ENV GRAPHSCOPE_HOME=/opt/graphscope
 
@@ -55,7 +65,7 @@ COPY ./interactive_engine/assembly/src/bin/graphscope/giectl /opt/graphscope/bin
 COPY ./k8s/utils/kube_ssh /usr/local/bin/kube_ssh
 RUN sudo chmod a+wrx /tmp
 
-#to make sure neo4j==5.10.0 can be installed
+#to make sure neo4j==5.21.0 can be installed
 RUN pip3 install pip==20.3.4
 
 USER graphscope

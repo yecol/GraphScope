@@ -19,12 +19,11 @@ type: cypher
 ```
 
 Note:
-- `name` is required.
-- `description` is optional.
-- The string in `query` field could be either `cypher` query or `c++` code. For comprehensive guidelines on crafting stored procedures in GraphScope Interactive using both Cypher and C++, refer to the [Cypher procedure](./development/stored_procedure/cypher_procedure.md) and [C++ procedure](./development/stored_procedure/cpp_procedure.md) documentation.
-- When compiling from Cypher code, the optimization rules defined under [`compiler.planner`](./configuration) will be taken into account to generate a more efficient program.
+- `name` is required. It serves as a unique identifier for a stored procedure, necessary for calling it from the Interactive SDK or Neo4j-native tools. Uniqueness is maintained within the context of a graph, allowing the same name for procedures in different graphs. Ensure the Interactive instance is running on the desired graph when calling the procedure.
+- `description` is optional. It is a string that helps you remember and illustrate the procedure's use. If omitted, a default description will be assigned.
+- The `query` field can contain either a Cypher query or C++ code. Cypher queries support templates where runtime parameters can be denoted as `$param_name`, which can be assigned values when calling the procedure. For defining a stored procedure in C++, see [C++ procedure](./development/stored_procedure/cpp_procedure.md).
+- When compiling Cypher code, the optimization rules specified in [`compiler.planner`](./configuration) will be applied to generate a more efficient program.
 
-For more information on defining a Cypher stored procedure, please refer to [Cypher Stored Procedure](./development/stored_procedure/cypher_procedure.md).
 
 ## Create a Stored Procedure
 
@@ -104,3 +103,87 @@ You can also call the stored procedure via neo4j-native tools, like `cypher-shel
 ```cypher
 CALL test_procedure("marko") YIELD *;
 ```
+
+
+
+In addition to defining a stored procedure with a Cypher query, we also support for customizing query execution through C++ stored procedures. See [C++ Stored Procedure](./development/stored_procedure/cpp_procedure.md).
+
+
+## Builtin Procedures
+
+To enhance the user experience in Interactive, we have integrated built-in stored procedures. These procedures facilitate both commonly executed queries and those that, while complex and challenging to devise, are essential and frequently utilized. To access these features, simply input the correct procedure name and the necessary parameters.
+
+### count_vertices
+
+This procedure returns the count of vertices for a specified label.
+
+```cypher
+CALL count_vertices(vertex_label_name)
+```
+
+###### Parameters
+
+- `vertex_label_name`: The name of the vertex label to be counted.
+
+###### Returns
+
+- `count`: The total number of vertices.
+
+### k_hop_neighbors
+
+This finds all vertices that can be reached from a starting vertex within `k` hops.
+
+```cypher
+CALL k_neighbors(src_vertex_label_name, src_vertex_pk, k)
+```
+
+###### Parameters
+
+- `src_vertex_label_name`: The label of the starting vertex.
+- `src_vertex_pk`: The primary key identifying the starting vertex.
+- `k`: The number of hops, which must be greater than or equal to 0.
+
+###### Returns
+
+- `label_name`: The label of each reachable vertex.
+- `vertex_pk`: The primary key of each reachable vertex.
+
+### shortest_path_among_three
+
+This finds the shortest path connecting three specified vertices.
+
+```cypher
+CALL shortest_path_among_three(label_1, pk_1, label_2, pk_2, label_3, pk_3)
+```
+
+###### Parameters
+
+- `label_1`: The label of the first vertex.
+- `pk_1`: The primary key of the first vertex.
+- `label_2`: The label of the second vertex.
+- `pk_2`: The primary key of the second vertex.
+- `label_3`: The label of the third vertex.
+- `pk_3`: The primary key of the third vertex.
+
+###### Returns
+
+- `path`: The shortest path, represented as a string.
+
+
+### pagerank
+
+Calculate the PageRank values for a subgraph of the current graph.
+
+```note
+Currently, we only support calculating PageRank on a subgraph with a single type of vertex and a single type of relationship.
+```
+
+```cypher
+CALL page_rank(vertex_label, edge_label, damping_factor, max_iterations, epsilon)
+```
+
+- `vertex_label`: The label of the vertices to be queried.
+- `edge_label`: The label of the relationships between vertices.
+- `damping_factor`: A parameter for the PageRank algorithm.
+- `max_iterations`: The maximum number of iterations.
+- `epsilon`: A convergence parameter for the PageRank algorithm.

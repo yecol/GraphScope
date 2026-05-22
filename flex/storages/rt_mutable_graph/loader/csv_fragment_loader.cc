@@ -158,10 +158,25 @@ static std::vector<std::string> read_header(
 static void put_delimiter_option(const LoadingConfig& loading_config,
                                  arrow::csv::ParseOptions& parse_options) {
   auto delimiter_str = loading_config.GetDelimiter();
-  if (delimiter_str.size() != 1) {
-    LOG(FATAL) << "Delimiter should be a single character";
+  if (delimiter_str.size() != 1 && delimiter_str[0] != '\\') {
+    LOG(FATAL) << "Delimiter should be a single character, or a escape "
+                  "character, like '\\t'";
   }
-  parse_options.delimiter = delimiter_str[0];
+  if (delimiter_str[0] == '\\') {
+    if (delimiter_str.size() != 2) {
+      LOG(FATAL) << "Delimiter should be a single character";
+    }
+    // escape the special character
+    switch (delimiter_str[1]) {
+    case 't':
+      parse_options.delimiter = '\t';
+      break;
+    default:
+      LOG(FATAL) << "Unsupported escape character: " << delimiter_str[1];
+    }
+  } else {
+    parse_options.delimiter = delimiter_str[0];
+  }
 }
 
 static bool put_skip_rows_option(const LoadingConfig& loading_config,
@@ -738,7 +753,7 @@ Result<bool> CSVFragmentLoader::LoadFragment() {
     auto work_dir = basic_fragment_loader_.work_dir();
     printDiskRemaining(work_dir);
     LOG(ERROR) << "Load fragment failed: " << e.what();
-    return Result<bool>(StatusCode::InternalError,
+    return Result<bool>(StatusCode::INTERNAL_ERROR,
                         "Load fragment failed: " + std::string(e.what()),
                         false);
   }

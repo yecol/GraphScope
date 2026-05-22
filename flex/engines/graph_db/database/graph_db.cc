@@ -14,11 +14,18 @@
  */
 
 #include "flex/engines/graph_db/database/graph_db.h"
-#include "flex/engines/graph_db/app/adhoc_app.h"
+#include "flex/engines/graph_db/app/builtin/count_vertices.h"
+#include "flex/engines/graph_db/app/builtin/k_hop_neighbors.h"
+#include "flex/engines/graph_db/app/builtin/pagerank.h"
+#include "flex/engines/graph_db/app/builtin/shortest_path_among_three.h"
+#include "flex/engines/graph_db/app/cypher_read_app.h"
+#include "flex/engines/graph_db/app/cypher_write_app.h"
 #include "flex/engines/graph_db/app/hqps_app.h"
 #include "flex/engines/graph_db/app/server_app.h"
 #include "flex/engines/graph_db/database/graph_db_session.h"
-#include "flex/engines/graph_db/database/wal.h"
+#include "flex/engines/graph_db/database/wal/wal.h"
+#include "flex/engines/graph_db/runtime/execute/plan_parser.h"
+#include "flex/engines/graph_db/runtime/utils/cypher_runner_impl.h"
 #include "flex/utils/yaml_utils.h"
 
 #include "flex/third_party/httplib.h"
@@ -27,18 +34,24 @@ namespace gs {
 
 struct SessionLocalContext {
   SessionLocalContext(GraphDB& db, const std::string& work_dir, int thread_id,
-                      MemoryStrategy allocator_strategy)
+                      MemoryStrategy allocator_strategy,
+                      std::unique_ptr<IWalWriter> in_logger)
       : allocator(allocator_strategy,
                   (allocator_strategy != MemoryStrategy::kSyncToFile
                        ? ""
                        : thread_local_allocator_prefix(work_dir, thread_id))),
-        session(db, allocator, logger, work_dir, thread_id) {}
-  ~SessionLocalContext() { logger.close(); }
+        logger(std::move(in_logger)),
+        session(db, allocator, *logger, work_dir, thread_id) {}
+  ~SessionLocalContext() {
+    if (logger) {
+      logger->close();
+    }
+  }
   Allocator allocator;
   char _padding0[128 - sizeof(Allocator) % 128];
-  WalWriter logger;
-  char _padding1[4096 - sizeof(WalWriter) - sizeof(Allocator) -
-                 sizeof(_padding0)];
+  std::unique_ptr<IWalWriter> logger;
+  char _padding1[4096 - sizeof(std::unique_ptr<IWalWriter>) -
+                 sizeof(Allocator) - sizeof(_padding0)];
   GraphDBSession session;
   char _padding2[4096 - sizeof(GraphDBSession) % 4096];
 };
@@ -50,13 +63,15 @@ GraphDB::~GraphDB() {
     compact_thread_.join();
   }
   if (contexts_ != nullptr) {
-    showAppMetrics();
+    // showAppMetrics();
     for (int i = 0; i < thread_num_; ++i) {
       contexts_[i].~SessionLocalContext();
     }
 
     free(contexts_);
   }
+  WalWriterFactory::Finalize();
+  WalParserFactory::Finalize();
 }
 
 GraphDB& GraphDB::get() {
@@ -67,7 +82,7 @@ GraphDB& GraphDB::get() {
 Result<bool> GraphDB::Open(const Schema& schema, const std::string& data_dir,
                            int32_t thread_num, bool warmup, bool memory_only,
                            bool enable_auto_compaction) {
-  GraphDBConfig config(schema, data_dir, thread_num);
+  GraphDBConfig config(schema, data_dir, "", thread_num);
   config.warmup = warmup;
   if (memory_only) {
     config.memory_level = 1;
@@ -79,6 +94,7 @@ Result<bool> GraphDB::Open(const Schema& schema, const std::string& data_dir,
 }
 
 Result<bool> GraphDB::Open(const GraphDBConfig& config) {
+  config_ = config;
   const std::string& data_dir = config.data_dir;
   const Schema& schema = config.schema;
   if (!std::filesystem::exists(data_dir)) {
@@ -97,13 +113,13 @@ Result<bool> GraphDB::Open(const GraphDBConfig& config) {
     graph_.Open(data_dir, config.memory_level);
   } catch (std::exception& e) {
     LOG(ERROR) << "Exception: " << e.what();
-    return Result<bool>(StatusCode::InternalError,
+    return Result<bool>(StatusCode::INTERNAL_ERROR,
                         "Exception: " + std::string(e.what()), false);
   }
 
   if ((!create_empty_graph) && (!graph_.schema().Equals(schema))) {
     LOG(ERROR) << "Schema inconsistent..\n";
-    return Result<bool>(StatusCode::InternalError,
+    return Result<bool>(StatusCode::INTERNAL_ERROR,
                         "Schema of work directory is not compatible with the "
                         "graph schema",
                         false);
@@ -112,6 +128,7 @@ Result<bool> GraphDB::Open(const GraphDBConfig& config) {
   // is not serialized and deserialized.
   auto& mutable_schema = graph_.mutable_schema();
   mutable_schema.SetPluginDir(schema.GetPluginDir());
+  mutable_schema.set_compiler_path(config.compiler_path);
   std::vector<std::pair<std::string, std::string>> plugin_name_paths;
   const auto& plugins = schema.GetPlugins();
   for (auto plugin_pair : plugins) {
@@ -134,7 +151,7 @@ Result<bool> GraphDB::Open(const GraphDBConfig& config) {
     allocator_strategy = MemoryStrategy::kHugepagePrefered;
   }
 
-  openWalAndCreateContexts(data_dir, allocator_strategy);
+  openWalAndCreateContexts(config, data_dir, allocator_strategy);
 
   if ((!create_empty_graph) && config.warmup) {
     graph_.Warmup(thread_num_);
@@ -220,14 +237,20 @@ Result<bool> GraphDB::Open(const GraphDBConfig& config) {
           VLOG(10) << "Trigger auto compaction";
           last_compaction_at = query_num_after;
           timestamp_t ts = this->version_manager_.acquire_update_timestamp();
-          auto txn = CompactTransaction(this->graph_, this->contexts_[0].logger,
-                                        this->version_manager_, ts);
+          auto txn =
+              CompactTransaction(this->graph_, *this->contexts_[0].logger,
+                                 this->version_manager_, ts);
+          OutputCypherProfiles("./" + std::to_string(ts) + "_");
           txn.Commit();
           VLOG(10) << "Finish compaction";
         }
       }
     });
   }
+
+  unlink((work_dir_ + "/statistics.json").c_str());
+  graph_.generateStatistics(work_dir_);
+  runtime::CypherRunnerImpl::get().clear_cache();
 
   return Result<bool>(true);
 }
@@ -255,9 +278,8 @@ void GraphDB::Close() {
   std::fill(app_factories_.begin(), app_factories_.end(), nullptr);
 }
 
-ReadTransaction GraphDB::GetReadTransaction() {
-  uint32_t ts = version_manager_.acquire_read_timestamp();
-  return {graph_, version_manager_, ts};
+ReadTransaction GraphDB::GetReadTransaction(int thread_id) {
+  return contexts_[thread_id].session.GetReadTransaction();
 }
 
 InsertTransaction GraphDB::GetInsertTransaction(int thread_id) {
@@ -293,16 +315,6 @@ void GraphDB::UpdateCompactionTimestamp(timestamp_t ts) {
 }
 timestamp_t GraphDB::GetLastCompactionTimestamp() const {
   return last_compaction_ts_;
-}
-
-const MutablePropertyFragment& GraphDB::graph() const { return graph_; }
-MutablePropertyFragment& GraphDB::graph() { return graph_; }
-
-const Schema& GraphDB::schema() const { return graph_.schema(); }
-
-std::shared_ptr<ColumnBase> GraphDB::get_vertex_property_column(
-    uint8_t label, const std::string& col_name) const {
-  return graph_.get_vertex_table(label).get_column(col_name);
 }
 
 AppWrapper GraphDB::CreateApp(uint8_t app_type, int thread_id) {
@@ -342,7 +354,7 @@ void GraphDB::GetAppInfo(Encoder& output) {
 
 static void IngestWalRange(SessionLocalContext* contexts,
                            MutablePropertyFragment& graph,
-                           const WalsParser& parser, uint32_t from, uint32_t to,
+                           const IWalParser& parser, uint32_t from, uint32_t to,
                            int thread_num) {
   std::atomic<uint32_t> cur_ts(from);
   std::vector<std::thread> threads(thread_num);
@@ -370,11 +382,10 @@ static void IngestWalRange(SessionLocalContext* contexts,
   }
 }
 
-void GraphDB::ingestWals(const std::vector<std::string>& wals,
-                         const std::string& work_dir, int thread_num) {
-  WalsParser parser(wals);
+void GraphDB::ingestWals(IWalParser& parser, const std::string& work_dir,
+                         int thread_num) {
   uint32_t from_ts = 1;
-  for (auto& update_wal : parser.update_wals()) {
+  for (auto& update_wal : parser.get_update_wals()) {
     uint32_t to_ts = update_wal.timestamp;
     if (from_ts < to_ts) {
       IngestWalRange(contexts_, graph_, parser, from_ts, to_ts, thread_num);
@@ -405,50 +416,84 @@ void GraphDB::initApps(
   }
   // Builtin apps
   app_factories_[0] = std::make_shared<ServerAppFactory>();
+  app_factories_[Schema::BUILTIN_COUNT_VERTICES_PLUGIN_ID] =
+      std::make_shared<CountVerticesFactory>();
+  app_factories_[Schema::BUILTIN_PAGERANK_PLUGIN_ID] =
+      std::make_shared<PageRankFactory>();
+  app_factories_[Schema::BUILTIN_K_DEGREE_NEIGHBORS_PLUGIN_ID] =
+      std::make_shared<KNeighborsFactory>();
+  app_factories_[Schema::BUILTIN_TVSP_PLUGIN_ID] =
+      std::make_shared<ShortestPathAmongThreeFactory>();
+
   app_factories_[Schema::HQPS_ADHOC_READ_PLUGIN_ID] =
       std::make_shared<HQPSAdhocReadAppFactory>();
   app_factories_[Schema::HQPS_ADHOC_WRITE_PLUGIN_ID] =
       std::make_shared<HQPSAdhocWriteAppFactory>();
   app_factories_[Schema::ADHOC_READ_PLUGIN_ID] =
-      std::make_shared<AdhocReadAppFactory>();
+      std::make_shared<CypherReadAppFactory>();
+  app_factories_[Schema::CYPHER_READ_DEBUG_PLUGIN_ID] =
+      std::make_shared<CypherReadAppFactory>();
+
+  auto& parser = gs::runtime::PlanParser::get();
+  parser.init();
+  app_factories_[Schema::ADHOC_READ_PLUGIN_ID] =
+      std::make_shared<CypherReadAppFactory>();
+
+  app_factories_[Schema::CYPHER_READ_PLUGIN_ID] =
+      std::make_shared<CypherReadAppFactory>();
+  app_factories_[Schema::CYPHER_WRITE_PLUGIN_ID] =
+      std::make_shared<CypherWriteAppFactory>();
 
   size_t valid_plugins = 0;
   for (auto& path_and_index : plugins) {
     auto path = path_and_index.second.first;
+    auto name = path_and_index.first;
     auto index = path_and_index.second.second;
-    if (registerApp(path, index)) {
-      ++valid_plugins;
+    if (!Schema::IsBuiltinPlugin(name)) {
+      if (registerApp(path, index)) {
+        ++valid_plugins;
+      }
+    } else {
+      valid_plugins++;
     }
   }
   LOG(INFO) << "Successfully registered stored procedures : " << valid_plugins
             << ", from " << plugins.size();
 }
 
-void GraphDB::openWalAndCreateContexts(const std::string& data_dir,
+void GraphDB::openWalAndCreateContexts(const GraphDBConfig& config,
+                                       const std::string& data_dir,
                                        MemoryStrategy allocator_strategy) {
-  std::string wal_dir_path = wal_dir(data_dir);
-  if (!std::filesystem::exists(wal_dir_path)) {
-    std::filesystem::create_directory(wal_dir_path);
-  }
-
-  std::vector<std::string> wal_files;
-  for (const auto& entry : std::filesystem::directory_iterator(wal_dir_path)) {
-    wal_files.push_back(entry.path().string());
-  }
-
+  WalWriterFactory::Init();
+  WalParserFactory::Init();
   contexts_ = static_cast<SessionLocalContext*>(
       aligned_alloc(4096, sizeof(SessionLocalContext) * thread_num_));
   std::filesystem::create_directories(allocator_dir(data_dir));
+
+  // Open the wal writer.
+  std::string wal_uri = config.wal_uri;
+  if (wal_uri.empty()) {
+    LOG(ERROR) << "wal_uri is not set, use default wal_uri";
+    wal_uri = wal_dir(data_dir);
+  } else if (wal_uri.find("{GRAPH_DATA_DIR}") != std::string::npos) {
+    LOG(INFO) << "Template {GRAPH_DATA_DIR} found in wal_uri, replace it with "
+                 "data_dir";
+    wal_uri = std::regex_replace(wal_uri, std::regex("\\{GRAPH_DATA_DIR\\}"),
+                                 data_dir);
+  }
+  VLOG(1) << "Using wal uri: " << wal_uri;
+
   for (int i = 0; i < thread_num_; ++i) {
     new (&contexts_[i])
-        SessionLocalContext(*this, data_dir, i, allocator_strategy);
+        SessionLocalContext(*this, data_dir, i, allocator_strategy,
+                            WalWriterFactory::CreateWalWriter(wal_uri));
   }
-  ingestWals(wal_files, data_dir, thread_num_);
+  auto wal_parser = WalParserFactory::CreateWalParser(wal_uri);
+  ingestWals(*wal_parser, data_dir, thread_num_);
 
   for (int i = 0; i < thread_num_; ++i) {
-    contexts_[i].logger.open(wal_dir_path, i);
+    contexts_[i].logger->open(wal_uri, i);
   }
-
   initApps(graph_.schema().GetPlugins());
   VLOG(1) << "Successfully restore load plugins";
 }
@@ -478,6 +523,27 @@ size_t GraphDB::getExecutedQueryNum() const {
     ret += contexts_[i].session.query_num();
   }
   return ret;
+}
+
+void GraphDB::OutputCypherProfiles(const std::string& prefix) {
+  runtime::OprTimer read_timer, write_timer;
+  int session_num = SessionNum();
+  for (int i = 0; i < session_num; ++i) {
+    auto read_app_ptr = GetSession(i).GetApp(Schema::CYPHER_READ_PLUGIN_ID);
+    auto casted_read_app = dynamic_cast<CypherReadApp*>(read_app_ptr);
+    if (casted_read_app) {
+      read_timer += casted_read_app->timer();
+    }
+
+    auto write_app_ptr = GetSession(i).GetApp(Schema::CYPHER_WRITE_PLUGIN_ID);
+    auto casted_write_app = dynamic_cast<CypherWriteApp*>(write_app_ptr);
+    if (casted_write_app) {
+      write_timer += casted_write_app->timer();
+    }
+  }
+
+  read_timer.output(prefix + "read_profile.log");
+  write_timer.output(prefix + "write_profile.log");
 }
 
 }  // namespace gs

@@ -1,10 +1,10 @@
-# Python SDK Reference
+# Python SDK Guide
 
-The Interactive Python SDK Reference is a comprehensive guide designed to assist developers in integrating the Interactive service into their Python applications. This SDK allows users to seamlessly connect to Interactive and harness its powerful features for graph management, stored procedure management, and query execution.
+The Interactive Python SDK guide is designed to assist developers in integrating the Interactive service into their Python applications. This SDK allows users to seamlessly connect to Interactive and harness its powerful features for graph management, stored procedure management, and query execution.
 
 ## Requirements.
 
-Python 3.7+
+Python >= 3.8
 
 ## Installation & Usage
 
@@ -360,8 +360,8 @@ Finally, we can delete the graph. The graph data and stored procedure bound to t
 Currently Interactive forbid deleting a graph which is currently serving in the service, so to delete graph, stop the service first.
 
 ```python
-# stop the service first
-resp = sess.stop_service()
+# stop the service first, note that graph_id is optional.
+resp = sess.stop_service(graph_id)
 assert resp.is_ok()
 print("successfully stopped the service")
 
@@ -370,115 +370,6 @@ assert resp.is_ok()
 print("delete graph res: ", resp)
 ```
 
-For the full example, please refer to [Java SDK Example](https://github.com/alibaba/GraphScope/tree/main/flex/interactive/sdk/examples/java/interactive-example)
+For the full example on Interactive engine, please refer to [Python SDK Example](https://github.com/alibaba/GraphScope/tree/main/flex/interactive/sdk/examples/python/basic_example.py).
 
-## Documentation for Service APIs
-
-The APIs in interactive SDK are divided into five categories.
-- GraphManagementApi
-- ProcedureManagementApi
-- JobManagementApi
-- ServiceManagementApi
-- QueryServiceApi
-
-All URIs are relative to `${INTERACTIVE_ADMIN_ENDPOINT}`
-
-Class | Method | HTTP request | Description
------------- | ------------- | ------------- | -------------
-*GraphManagementApi* | [**BulkLoading**](./GraphManagementApi.md#Bulkloading) | **POST** /v1/graph/{graph_id}/dataloading | 
-*GraphManagementApi* | [**CreateGraph**](./GraphManagementApi.md#CreateGraph) | **POST** /v1/graph | 
-*GraphManagementApi* | [**DeleteGraph**](./GraphManagementApi.md#DeleteGraph) | **DELETE** /v1/graph/{graph_id} | 
-*GraphManagementApi* | [**GetGraphMeta**](./GraphManagementApi.md#GetGraphMeta) | **GET** /v1/graph/{graph_id} | 
-*GraphManagementApi* | [**GetGraphSchema**](./GraphManagementApi.md#GetGraphSchema) | **GET** /v1/graph/{graph_id}/schema | 
-*GraphManagementApi* | [**ListGraphs**](./GraphManagementApi.md#ListGraphs) | **GET** /v1/graph | 
-*GraphManagementApi* | [**GetGraphStatistics**](./GraphManagementApi.md#GetGraphStatistics) | **GET** /v1/graph/{graph_id}/statistics | 
-*JobManagementApi* | [**CancelJob**](./JobManagementApi.md#CancelJob) | **DELETE** /v1/job/{job_id} | 
-*JobManagementApi* | [**GetJobById**](./JobManagementApi.md#GetJobById) | **GET** /v1/job/{job_id} | 
-*JobManagementApi* | [**ListJobs**](./JobManagementApi.md#ListJobs) | **GET** /v1/job | 
-*ProcedureManagementApi* | [**CreateProcedure**](./ProcedureManagementApi.md#CreateProcedure) | **POST** /v1/graph/{graph_id}/procedure | 
-*ProcedureManagementApi* | [**DeleteProcedure**](./ProcedureManagementApi.md#DeleteProcedure) | **DELETE** /v1/graph/{graph_id}/procedure/{procedure_id} | 
-*ProcedureManagementApi* | [**GetProcedure**](./ProcedureManagementApi.md#GetProcedure) | **GET** /v1/graph/{graph_id}/procedure/{procedure_id} | 
-*ProcedureManagementApi* | [**ListProcedures**](./ProcedureManagementApi.md#ListProcedures) | **GET** /v1/graph/{graph_id}/procedure | 
-*ProcedureManagementApi* | [**UpdateProcedure**](./ProcedureManagementApi.md#UpdateProcedure) | **PUT** /v1/graph/{graph_id}/procedure/{procedure_id} | 
-*ServiceManagementApi* | [**GetServiceStatus**](./ServiceManagementApi.md#GetServiceStatus) | **GET** /v1/service/status | 
-*ServiceManagementApi* | [**RestartService**](./ServiceManagementApi.md#RestartService) | **POST** /v1/service/restart | 
-*ServiceManagementApi* | [**StartService**](./ServiceManagementApi.md#StartService) | **POST** /v1/service/start | 
-*ServiceManagementApi* | [**StopService**](./ServiceManagementApi.md#StopService) | **POST** /v1/service/stop | 
-*QueryServiceApi* | [**CallProcedure**](./QueryServiceApi.md#CallProcedure) | **POST** /v1/graph/{graph_id}/query | 
-*QueryServiceApi* | [**CallProcedureOnCurrentGraph**](./QueryServiceApi.md#CallProcedureOnCurrentGraph) | **POST** /v1/graph/current/query | 
-<!-- TODO(zhanglei): Add Vertex/Edge APIs after supported by Interactive -->
-
-
-## Documentation for Data Structures
-
- - [BaseEdgeType](./BaseEdgeType.md)
- - [BaseEdgeTypeVertexTypePairRelationsInner](./BaseEdgeTypeVertexTypePairRelationsInner.md)
- - [BaseEdgeTypeVertexTypePairRelationsInnerXCsrParams](./BaseEdgeTypeVertexTypePairRelationsInnerXCsrParams.md)
- - [BasePropertyMeta](./BasePropertyMeta.md)
- - [BaseVertexType](./BaseVertexType.md)
- - [BaseVertexTypeXCsrParams](./BaseVertexTypeXCsrParams.md)
- - [Collection](./Collection.md)
- - [CollectiveResults](./CollectiveResults.md)
- - [Column](./Column.md)
- - [ColumnMapping](./ColumnMapping.md)
- - [CreateEdgeType](./CreateEdgeType.md)
- - [CreateGraphRequest](./CreateGraphRequest.md)
- - [CreateGraphResponse](./CreateGraphResponse.md)
- - [CreateGraphSchemaRequest](./CreateGraphSchemaRequest.md)
- - [CreateProcedureRequest](./CreateProcedureRequest.md)
- - [CreateProcedureResponse](./CreateProcedureResponse.md)
- - [CreatePropertyMeta](./CreatePropertyMeta.md)
- - [CreateVertexType](./CreateVertexType.md)
- - [EdgeData](./EdgeData.md)
- - [EdgeMapping](./EdgeMapping.md)
- - [EdgeMappingDestinationVertexMappingsInner](./EdgeMappingDestinationVertexMappingsInner.md)
- - [EdgeMappingSourceVertexMappingsInner](./EdgeMappingSourceVertexMappingsInner.md)
- - [EdgeMappingSourceVertexMappingsInnerColumn](./EdgeMappingSourceVertexMappingsInnerColumn.md)
- - [EdgeMappingTypeTriplet](./EdgeMappingTypeTriplet.md)
- - [EdgeRequest](./EdgeRequest.md)
- - [Element](./Element.md)
- - [FixedChar](./FixedChar.md)
- - [FixedCharChar](./FixedCharChar.md)
- - [GSDataType](./GSDataType.md)
- - [GetEdgeType](./GetEdgeType.md)
- - [GetGraphResponse](./GetGraphResponse.md)
- - [GetGraphSchemaResponse](./GetGraphSchemaResponse.md)
- - [GetProcedureResponse](./GetProcedureResponse.md)
- - [GetPropertyMeta](./GetPropertyMeta.md)
- - [GetVertexType](./GetVertexType.md)
- - [JobResponse](./JobResponse.md)
- - [JobStatus](./JobStatus.md)
- - [KeyValue](./KeyValue.md)
- - [LongText](./LongText.md)
- - [ModelProperty](./ModelProperty.md)
- - [Parameter](./Parameter.md)
- - [PrimitiveType](./PrimitiveType.md)
- - [PropertyArray](./PropertyArray.md)
- - [QueryRequest](./QueryRequest.md)
- - [Record](./Record.md)
- - [SchemaMapping](./SchemaMapping.md)
- - [SchemaMappingLoadingConfig](./SchemaMappingLoadingConfig.md)
- - [SchemaMappingLoadingConfigFormat](./SchemaMappingLoadingConfigFormat.md)
- - [ServiceStatus](./ServiceStatus.md)
- - [StartServiceRequest](./StartServiceRequest.md)
- - [StoredProcedureMeta](./StoredProcedureMeta.md)
- - [StringType](./StringType.md)
- - [StringTypeString](./StringTypeString.md)
- - [TemporalType](./TemporalType.md)
- - [TimeStampType](./TimeStampType.md)
- - [TypedValue](./TypedValue.md)
- - [UpdateProcedureRequest](./UpdateProcedureRequest.md)
- - [VarChar](./VarChar.md)
- - [VarCharVarChar](./VarCharVarChar.md)
- - [VertexData](./VertexData.md)
- - [VertexMapping](./VertexMapping.md)
- - [VertexRequest](./VertexRequest.md)
-
-
-<a id="documentation-for-authorization"></a>
-## Documentation For Authorization
-
-Authentication is not supported yet, and we will be introducing authorization-related implementation in the near future.
-
-
-
+For the full documentation for python sdk reference, please refer to [Python SDK Reference](./python_sdk_ref.md).

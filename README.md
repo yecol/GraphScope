@@ -24,6 +24,7 @@ GraphScope is a unified distributed graph computing platform that provides a one
 Visit our website at [graphscope.io](https://graphscope.io) to learn more.
 
 ## Latest News
+- [21/04/2025] 🏆 GraphScope achieved record-breaking results on the [LDBC Social Network Benchmark Interactive workload](https://ldbcouncil.org/benchmarks/snb-interactive/) using declarative query language CYPHER, with a 2.0× higher throughput on SF300 than the previous record holder! 🏆
 - [31/07/2024] 🎢 We’ve launched a webpage visualizing GraphScope’s journey in graph computing. [Check it out!](https://graphscope.io/journey)
 - [30/05/2024] 🏅 GraphScope Flex set new record-breaking [SNB Interactive audit results](https://ldbcouncil.org/benchmarks/snb-interactive/), as announced by LDBC on [X (Twitter)](https://twitter.com/LDBCouncil/status/1795886732950294630)!
 - [25/03/2024] 🙌🏻 We donated the graph file format [GraphAr](https://graphar.apache.org/) to [Apache Software Foundation](https://www.apache.org/) as an Incubating Project. 
@@ -162,8 +163,7 @@ following the last step.
 # define the features for learning
 paper_features = [f"feat_{i}" for i in range(128)]
 
-paper_features.append("kcore")
-paper_features.append("tc")
+paper_features.extend(["kcore", "tc"])
 
 # launch a learning engine.
 lg = graphscope.graphlearn(sub_graph, nodes=[("paper", paper_features)],

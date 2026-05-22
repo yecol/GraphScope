@@ -20,16 +20,20 @@ import com.alibaba.graphscope.common.client.ExecutionClient;
 import com.alibaba.graphscope.common.client.channel.ChannelFetcher;
 import com.alibaba.graphscope.common.config.Configs;
 import com.alibaba.graphscope.common.config.FrontendConfig;
+import com.alibaba.graphscope.common.ir.tools.GraphPlanner;
 import com.alibaba.graphscope.common.ir.tools.QueryCache;
 import com.alibaba.graphscope.common.ir.tools.QueryIdGenerator;
 import com.alibaba.graphscope.common.manager.IrMetaQueryCallback;
 import com.alibaba.graphscope.common.manager.RateLimitExecutor;
+import com.alibaba.graphscope.common.metric.MetricsTool;
 import com.alibaba.graphscope.gremlin.Utils;
 import com.alibaba.graphscope.gremlin.auth.AuthManager;
 import com.alibaba.graphscope.gremlin.auth.AuthManagerReference;
 import com.alibaba.graphscope.gremlin.auth.DefaultAuthManager;
 import com.alibaba.graphscope.gremlin.integration.processor.IrTestOpProcessor;
 import com.alibaba.graphscope.gremlin.integration.result.GraphProperties;
+import com.alibaba.graphscope.gremlin.metric.GremlinExecutorQueueMetric;
+import com.alibaba.graphscope.gremlin.metric.GremlinQPSMetric;
 import com.alibaba.graphscope.gremlin.plugin.processor.IrOpLoader;
 import com.alibaba.graphscope.gremlin.plugin.processor.IrStandardOpProcessor;
 import com.alibaba.graphscope.gremlin.plugin.traversal.IrCustomizedTraversalSource;
@@ -49,6 +53,7 @@ import java.util.concurrent.*;
 public class IrGremlinServer implements AutoCloseable {
     private final Configs configs;
     private final QueryCache queryCache;
+    private final GraphPlanner graphPlanner;
     private final ExecutionClient executionClient;
     private final ChannelFetcher channelFetcher;
     private final IrMetaQueryCallback metaQueryCallback;
@@ -60,18 +65,22 @@ public class IrGremlinServer implements AutoCloseable {
     private final GraphTraversalSource g;
 
     private final QueryIdGenerator idGenerator;
+    private final MetricsTool metricsTool;
 
     public IrGremlinServer(
             Configs configs,
             QueryIdGenerator idGenerator,
             QueryCache queryCache,
+            GraphPlanner graphPlanner,
             ExecutionClient executionClient,
             ChannelFetcher channelFetcher,
             IrMetaQueryCallback metaQueryCallback,
-            GraphProperties testGraph) {
+            GraphProperties testGraph,
+            MetricsTool metricsTool) {
         this.configs = configs;
         this.idGenerator = idGenerator;
         this.queryCache = queryCache;
+        this.graphPlanner = graphPlanner;
         this.executionClient = executionClient;
         this.channelFetcher = channelFetcher;
         this.metaQueryCallback = metaQueryCallback;
@@ -87,6 +96,7 @@ public class IrGremlinServer implements AutoCloseable {
         this.settings.evaluationTimeout = FrontendConfig.QUERY_EXECUTION_TIMEOUT_MS.get(configs);
         this.graph = TinkerFactory.createModern();
         this.g = this.graph.traversal(IrCustomizedTraversalSource.class);
+        this.metricsTool = metricsTool;
     }
 
     public void start() throws Exception {
@@ -95,6 +105,7 @@ public class IrGremlinServer implements AutoCloseable {
                         configs,
                         idGenerator,
                         queryCache,
+                        graphPlanner,
                         executionClient,
                         channelFetcher,
                         metaQueryCallback,
@@ -106,6 +117,7 @@ public class IrGremlinServer implements AutoCloseable {
                         configs,
                         idGenerator,
                         queryCache,
+                        graphPlanner,
                         executionClient,
                         channelFetcher,
                         metaQueryCallback,
@@ -125,6 +137,9 @@ public class IrGremlinServer implements AutoCloseable {
         serverGremlinExecutor.getGraphManager().putTraversalSource("g", graph.traversal());
 
         this.gremlinServer.start().join();
+        this.metricsTool
+                .registerMetric(new GremlinExecutorQueueMetric(this.gremlinServer))
+                .registerMetric(new GremlinQPSMetric(this.gremlinServer));
     }
 
     private ExecutorService createRateLimitExecutor() {

@@ -20,14 +20,17 @@ import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 
 public class FrontendStoreService extends FrontendStoreServiceGrpc.FrontendStoreServiceImplBase {
 
     private final StoreService storeService;
+    private final KafkaProcessor processor;
 
-    public FrontendStoreService(StoreService storeService) {
+    public FrontendStoreService(StoreService storeService, KafkaProcessor processor) {
         this.storeService = storeService;
+        this.processor = processor;
     }
 
     @Override
@@ -126,5 +129,63 @@ public class FrontendStoreService extends FrontendStoreServiceGrpc.FrontendStore
         builder.putPartitionStates(storeService.getStoreId(), state);
         responseObserver.onNext(builder.build());
         responseObserver.onCompleted();
+    }
+
+    @Override
+    public void replayRecordsV2(
+            ReplayRecordsRequestV2 request,
+            StreamObserver<ReplayRecordsResponseV2> responseObserver) {
+        try {
+            long offset = request.getOffset();
+            long ts = request.getTimestamp();
+            List<Long> si = this.processor.replayDMLRecordsFrom(offset, ts);
+            responseObserver.onNext(
+                    ReplayRecordsResponseV2.newBuilder().addAllSnapshotId(si).build());
+            responseObserver.onCompleted();
+        } catch (IOException e) {
+            responseObserver.onError(
+                    Status.INTERNAL.withDescription(e.getMessage()).asRuntimeException());
+        }
+    }
+
+    @Override
+    public void updateCatchUpStatus(
+            UpdateCatchUpStatusRequest request,
+            StreamObserver<UpdateCatchUpStatusResponse> responseObserver) {
+        try {
+            boolean enableCatchUpPrimary = request.getEnable();
+            this.storeService.updateCatchUpStatus(enableCatchUpPrimary);
+            responseObserver.onNext(
+                    UpdateCatchUpStatusResponse.newBuilder().setSuccess(true).build());
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            responseObserver.onError(
+                    Status.INTERNAL.withDescription(e.getMessage()).asRuntimeException());
+        }
+    }
+
+    @Override
+    public void compactPartition(
+            CompactPartitionRequest request,
+            StreamObserver<CompactPartitionResponse> responseObserver) {
+        int partitionId = request.getPartitionId();
+        this.storeService.compactSinglePartition(
+                partitionId,
+                new CompletionCallback<Void>() {
+                    @Override
+                    public void onCompleted(Void res) {
+                        responseObserver.onNext(
+                                CompactPartitionResponse.newBuilder().setSuccess(true).build());
+                        responseObserver.onCompleted();
+                    }
+
+                    @Override
+                    public void onError(Throwable t) {
+                        responseObserver.onError(
+                                Status.INTERNAL
+                                        .withDescription(t.getMessage())
+                                        .asRuntimeException());
+                    }
+                });
     }
 }

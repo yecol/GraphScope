@@ -22,6 +22,33 @@
 
 namespace gs {
 
+std::string_view truncate_utf8(std::string_view str, size_t length) {
+  if (str.size() <= length) {
+    return str;
+  }
+  size_t byte_count = 0;
+
+  for (const char* p = str.data(); *p && byte_count < length;) {
+    unsigned char ch = *p;
+    size_t char_length = 0;
+    if ((ch & 0x80) == 0) {
+      char_length = 1;
+    } else if ((ch & 0xE0) == 0xC0) {
+      char_length = 2;
+    } else if ((ch & 0xF0) == 0xE0) {
+      char_length = 3;
+    } else if ((ch & 0xF8) == 0xF0) {
+      char_length = 4;
+    }
+    if (byte_count + char_length > length) {
+      break;
+    }
+    p += char_length;
+    byte_count += char_length;
+  }
+  return str.substr(0, byte_count);
+}
+
 template <typename T>
 class TypedEmptyColumn : public ColumnBase {
  public:
@@ -64,7 +91,7 @@ template <>
 class TypedEmptyColumn<std::string_view> : public ColumnBase {
  public:
   TypedEmptyColumn(
-      int32_t max_length = PropertyType::STRING_DEFAULT_MAX_LENGTH) {}
+      int32_t max_length = PropertyType::GetStringDefaultMaxLength()) {}
   ~TypedEmptyColumn() {}
 
   void open(const std::string& name, const std::string& snapshot_dir,
@@ -137,7 +164,7 @@ std::shared_ptr<ColumnBase> CreateColumn(
       return std::make_shared<StringEmptyColumn>();
     } else if (type == PropertyType::kStringView) {
       return std::make_shared<StringEmptyColumn>(
-          gs::PropertyType::STRING_DEFAULT_MAX_LENGTH);
+          gs::PropertyType::GetStringDefaultMaxLength());
     } else if (type.type_enum == impl::PropertyTypeImpl::kVarChar) {
       return std::make_shared<StringEmptyColumn>(
           type.additional_type_info.max_length);
@@ -151,6 +178,10 @@ std::shared_ptr<ColumnBase> CreateColumn(
       return std::make_shared<TypedColumn<grape::EmptyType>>(strategy);
     } else if (type == PropertyType::kBool) {
       return std::make_shared<BoolColumn>(strategy);
+    } else if (type == PropertyType::kUInt8) {
+      return std::make_shared<UInt8Column>(strategy);
+    } else if (type == PropertyType::kUInt16) {
+      return std::make_shared<UInt16Column>(strategy);
     } else if (type == PropertyType::kInt32) {
       return std::make_shared<IntColumn>(strategy);
     } else if (type == PropertyType::kInt64) {
@@ -169,11 +200,14 @@ std::shared_ptr<ColumnBase> CreateColumn(
       return std::make_shared<DayColumn>(strategy);
     } else if (type == PropertyType::kStringMap) {
       return std::make_shared<DefaultStringMapColumn>(strategy);
-    } else if (type == PropertyType::kStringView) {
-      return std::make_shared<StringColumn>(strategy);
     } else if (type.type_enum == impl::PropertyTypeImpl::kVarChar) {
+      // We must check is varchar first, because in implementation of
+      // PropertyType::operator==(const PropertyType& other), we string_view is
+      // equal to varchar.
       return std::make_shared<StringColumn>(
           strategy, type.additional_type_info.max_length);
+    } else if (type == PropertyType::kStringView) {
+      return std::make_shared<StringColumn>(strategy);
     } else if (type.type_enum == impl::PropertyTypeImpl::kRecordView) {
       return std::make_shared<RecordViewColumn>(sub_types);
     } else {
@@ -181,6 +215,45 @@ std::shared_ptr<ColumnBase> CreateColumn(
                  << static_cast<int>(type.type_enum);
       return nullptr;
     }
+  }
+}
+
+void TypedColumn<std::string_view>::set_value_safe(
+    size_t idx, const std::string_view& value) {
+  std::shared_lock<std::shared_mutex> lock(rw_mutex_);
+
+  if (idx >= basic_size_ && idx < basic_size_ + extra_size_) {
+    size_t offset = pos_.fetch_add(value.size());
+    if (pos_.load() > extra_buffer_.data_size()) {
+      lock.unlock();
+      std::unique_lock<std::shared_mutex> w_lock(rw_mutex_);
+      if (pos_.load() > extra_buffer_.data_size()) {
+        size_t new_avg_width =
+            (pos_.load() + idx - basic_size_) / (idx - basic_size_ + 1);
+        size_t new_len = std::max(extra_size_ * new_avg_width, pos_.load());
+        extra_buffer_.resize(extra_buffer_.size(), new_len);
+      }
+      w_lock.unlock();
+      lock.lock();
+    }
+    extra_buffer_.set(idx - basic_size_, offset, value);
+  } else if (idx < basic_size_) {
+    size_t offset = basic_pos_.fetch_add(value.size());
+    if (basic_pos_.load() > basic_buffer_.data_size()) {
+      lock.unlock();
+      std::unique_lock<std::shared_mutex> w_lock(rw_mutex_);
+      if (basic_pos_.load() > basic_buffer_.data_size()) {
+        size_t new_avg_width = (basic_pos_.load() + idx) / (idx + 1);
+        size_t new_len =
+            std::max(basic_size_ * new_avg_width, basic_pos_.load());
+        basic_buffer_.resize(basic_buffer_.size(), new_len);
+      }
+      w_lock.unlock();
+      lock.lock();
+    }
+    basic_buffer_.set(idx, offset, value);
+  } else {
+    LOG(FATAL) << "Index out of range";
   }
 }
 

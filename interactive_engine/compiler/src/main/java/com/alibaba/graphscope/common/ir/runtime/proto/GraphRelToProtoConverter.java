@@ -106,6 +106,30 @@ public class GraphRelToProtoConverter extends GraphShuttle {
     }
 
     @Override
+    public RelNode visit(GraphProcedureCall procedureCall) {
+        visitChildren(procedureCall);
+        physicalBuilder.addPlan(
+                GraphAlgebraPhysical.PhysicalOpr.newBuilder()
+                        .setOpr(
+                                GraphAlgebraPhysical.PhysicalOpr.Operator.newBuilder()
+                                        .setProcedureCall(
+                                                GraphAlgebraPhysical.ProcedureCall.newBuilder()
+                                                        .setQuery(
+                                                                Utils.protoProcedure(
+                                                                        procedureCall
+                                                                                .getProcedure(),
+                                                                        new RexToProtoConverter(
+                                                                                true,
+                                                                                isColumnId,
+                                                                                this.rexBuilder))))
+                                        .build())
+                        .addAllMetaData(
+                                Utils.physicalProtoRowType(procedureCall.getRowType(), isColumnId))
+                        .build());
+        return procedureCall;
+    }
+
+    @Override
     public RelNode visit(GraphLogicalSource source) {
         GraphAlgebraPhysical.PhysicalOpr.Builder oprBuilder =
                 GraphAlgebraPhysical.PhysicalOpr.newBuilder();
@@ -962,6 +986,37 @@ public class GraphRelToProtoConverter extends GraphShuttle {
         return multiJoin;
     }
 
+    @Override
+    public RelNode visit(GraphLogicalUnfold unfold) {
+        visitChildren(unfold);
+        RexNode unfoldKey = unfold.getUnfoldKey();
+        Preconditions.checkArgument(
+                unfoldKey instanceof RexGraphVariable,
+                "unfold key should be a variable, but is [%s]",
+                unfoldKey);
+        int keyAliasId = ((RexGraphVariable) unfoldKey).getAliasId();
+        GraphAlgebraPhysical.Unfold.Builder unfoldBuilder =
+                GraphAlgebraPhysical.Unfold.newBuilder().setTag(Utils.asAliasId(keyAliasId));
+        if (unfold.getAliasId() != AliasInference.DEFAULT_ID) {
+            unfoldBuilder.setAlias(Utils.asAliasId(unfold.getAliasId()));
+        }
+        List<RelDataTypeField> fullFields = unfold.getRowType().getFieldList();
+        Preconditions.checkArgument(!fullFields.isEmpty(), "there is no fields in unfold row type");
+        RelDataType curRowType =
+                new RelRecordType(
+                        StructKind.FULLY_QUALIFIED,
+                        fullFields.subList(fullFields.size() - 1, fullFields.size()));
+        physicalBuilder.addPlan(
+                GraphAlgebraPhysical.PhysicalOpr.newBuilder()
+                        .setOpr(
+                                GraphAlgebraPhysical.PhysicalOpr.Operator.newBuilder()
+                                        .setUnfold(unfoldBuilder)
+                                        .build())
+                        .addAllMetaData(Utils.physicalProtoRowType(curRowType, isColumnId))
+                        .build());
+        return unfold;
+    }
+
     private List<RexGraphVariable> getLeftRightVariables(RexNode condition) {
         List<RexGraphVariable> vars = Lists.newArrayList();
         if (condition instanceof RexCall) {
@@ -1103,6 +1158,20 @@ public class GraphRelToProtoConverter extends GraphShuttle {
                 com.alibaba.graphscope.common.ir.tools.Utils.getGraphLabels(tableScan.getRowType())
                         .getLabelsEntry());
         addQueryFilters(paramsBuilder, tableScan.getFilters());
+        if (tableScan instanceof GraphLogicalSource) {
+            GraphLogicalSource source = (GraphLogicalSource) tableScan;
+            source.getParams()
+                    .getParams()
+                    .forEach(
+                            (k, v) -> {
+                                if (k.equalsIgnoreCase("range")) {
+                                    RangeParam rangeParam = (RangeParam) v;
+                                    GraphAlgebra.Range range =
+                                            buildRange(rangeParam.left, rangeParam.right);
+                                    paramsBuilder.setLimit(range);
+                                }
+                            });
+        }
         return paramsBuilder;
     }
 

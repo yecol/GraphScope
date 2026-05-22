@@ -16,6 +16,7 @@
 
 package com.alibaba.graphscope.common.ir;
 
+import com.alibaba.graphscope.common.exception.FrontendException;
 import com.alibaba.graphscope.common.ir.type.GraphPathType;
 import com.alibaba.graphscope.common.ir.type.GraphSchemaType;
 
@@ -200,7 +201,7 @@ public class GraphTypeInferenceTest {
         } catch (Exception e) {
             Assert.assertTrue(
                     e.getMessage()
-                            .equals(
+                            .contains(
                                     "graph schema type error: unable to find getV with [opt=END,"
                                             + " type=[VertexLabel(PERSON)]] from expand with"
                                             + " [type=[EdgeLabel(REPLYOF, COMMENT, COMMENT),"
@@ -218,13 +219,14 @@ public class GraphTypeInferenceTest {
                             "Match (a)-[:ISLOCATEDIN]->(b {creationDate:20101012}) Return a, b",
                             Utils.mockGraphBuilder("schema/ldbc.json"))
                     .build();
-        } catch (Exception e) {
+        } catch (FrontendException e) {
             // after type inference, 'b' should be of type 'PLACE', which does not have property
             // 'creationDate'
-            Assert.assertEquals(
-                    "{property=creationDate} not found; expected properties are: [id, name, url,"
-                            + " type]",
-                    e.getMessage());
+            Assert.assertTrue(
+                    e.getMessage()
+                            .contains(
+                                    "{property=creationDate} not found; expected properties are:"
+                                            + " [id, name, url, type]"));
             return;
         }
         Assert.fail();
@@ -237,15 +239,60 @@ public class GraphTypeInferenceTest {
                             "Match (a)-[:ISLOCATEDIN]->(b {creationDate:20101012}) Return a, b",
                             Utils.mockGraphBuilder("schema/ldbc.json"))
                     .build();
-        } catch (Exception e) {
+        } catch (FrontendException e) {
             // after type inference, 'b' should be of type 'PLACE', which does not have property
             // 'creationDate'
-            Assert.assertEquals(
-                    "{property=creationDate} not found; expected properties are: [id, name, url,"
-                            + " type]",
-                    e.getMessage());
+            Assert.assertTrue(
+                    e.getMessage()
+                            .contains(
+                                    "{property=creationDate} not found; expected properties are:"
+                                            + " [id, name, url, type]"));
             return;
         }
         Assert.fail();
+    }
+
+    @Test
+    public void person_likes_post_type_test() {
+        RelNode match =
+                com.alibaba.graphscope.cypher.antlr4.Utils.eval(
+                                "Match (a:PERSON)-[:KNOWS]-(:PERSON)-[:LIKES]-(c:POST) Return c",
+                                Utils.mockGraphBuilder("schema/ldbc.json"))
+                        .build();
+        Assert.assertEquals(
+                "GraphLogicalProject(c=[c], isAppend=[false])\n"
+                        + "  GraphLogicalSingleMatch(input=[null],"
+                        + " sentence=[GraphLogicalGetV(tableConfig=[{isAll=false, tables=[POST]}],"
+                        + " alias=[c], opt=[OTHER])\n"
+                        + "  GraphLogicalExpand(tableConfig=[[EdgeLabel(LIKES, PERSON, POST)]],"
+                        + " alias=[_], opt=[OUT])\n"
+                        + "    GraphLogicalGetV(tableConfig=[{isAll=false, tables=[PERSON]}],"
+                        + " alias=[_], opt=[OTHER])\n"
+                        + "      GraphLogicalExpand(tableConfig=[{isAll=false, tables=[KNOWS]}],"
+                        + " alias=[_], opt=[BOTH])\n"
+                        + "        GraphLogicalSource(tableConfig=[{isAll=false, tables=[PERSON]}],"
+                        + " alias=[a], opt=[VERTEX])\n"
+                        + "], matchOpt=[INNER])",
+                match.explain().trim());
+    }
+
+    @Test
+    public void person_likes_post_type_test_2() {
+        RelNode match =
+                com.alibaba.graphscope.cypher.antlr4.Utils.eval(
+                                "Match (a)-[:LIKES]-(c) Return c",
+                                Utils.mockGraphBuilder("schema/ldbc.json"))
+                        .build();
+        Assert.assertEquals(
+                "GraphLogicalProject(c=[c], isAppend=[false])\n"
+                    + "  GraphLogicalSingleMatch(input=[null],"
+                    + " sentence=[GraphLogicalGetV(tableConfig=[{isAll=false, tables=[PERSON, POST,"
+                    + " COMMENT]}], alias=[c], opt=[OTHER])\n"
+                    + "  GraphLogicalExpand(tableConfig=[{isAll=false, tables=[LIKES]}], alias=[_],"
+                    + " opt=[BOTH])\n"
+                    + "    GraphLogicalSource(tableConfig=[{isAll=false, tables=[PERSON, POST,"
+                    + " COMMENT]}], alias=[a], opt=[VERTEX])\n"
+                    + "], matchOpt=[INNER])",
+                match.explain().trim());
     }
 }

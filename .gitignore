@@ -58,7 +58,9 @@ docs/flex/interactive/development/java/*
 docs/flex/interactive/development/python/*
 !docs/flex/interactive/development/python/*Api.md
 !docs/flex/interactive/development/python/python_sdk.md
+!docs/flex/interactive/development/python/python_sdk_ref.md
 docs/flex/interactive/development/restful_api.html
+docs/flex/coordinator/development/python/*
 
 analytical_engine/build/
 
@@ -76,6 +78,7 @@ interactive_engine/executor/store/groot/src/db/proto/*
 !interactive_engine/executor/store/groot/src/db/proto/mod.rs
 interactive_engine/data-load-tool/dependency-reduced-pom.xml
 interactive_engine/gaia-adaptor/dependency-reduced-pom.xml
+interactive_engine/neo4j-shaded/dependency-reduced-pom.xml
 interactive_engine/executor/Cargo.lock
 interactive_engine/executor/engine/pegasus/benchmark/src/graph/storage/clickhouse/pb_gen/*
 interactive_engine/executor/ir/Cargo.lock
@@ -98,6 +101,17 @@ package.lock
 # Core dump
 core.*
 *.core
+
+# Openapi generated code
+python/graphscope/flex/rest
+python/.openapi-generator/
+!python/graphscope/flex/rest/models/time_stamp_type.py
+!python/graphscope/flex/rest/models/date_type.py
+!python/graphscope/flex/rest/models/long_text.py
+
+.openapi-generator/
+
+coordinator/gscoordinator/flex/test/
 
 # Flex related
 flex/docs/
@@ -124,6 +138,7 @@ flex/interactive/sdk/java/.openapi-generator/*
 flex/interactive/sdk/java/src/main/AndroidManifest.xml
 flex/interactive/sdk/java/.openapi-generate/
 flex/interactive/sdk/java/settings.gradle
+flex/interactive/sdk/java/reference/**
 flex/interactive/sdk/java/src/main/java/com/alibaba/graphscope/interactive/models/
 flex/interactive/sdk/java/src/main/java/com/alibaba/graphscope/interactive/api/
 flex/interactive/sdk/java/src/main/java/com/alibaba/graphscope/interactive/auth/
@@ -143,13 +158,36 @@ flex/interactive/sdk/python/pyproject.toml
 flex/interactive/sdk/python/gs_interactive/models/
 flex/interactive/sdk/python/gs_interactive/api/
 flex/interactive/sdk/python/gs_interactive/__init__.py
-flex/interactive/sdk/python/gs_interactive/api_client.py
 flex/interactive/sdk/python/gs_interactive/api_response.py
-flex/interactive/sdk/python/gs_interactive/configuration.py
 flex/interactive/sdk/python/gs_interactive/exceptions.py
 flex/interactive/sdk/python/gs_interactive/rest.py
 !flex/interactive/sdk/python/gs_interactive/client/generated/__init__.py
 !flex/interactive/sdk/python/gs_interactive/models/long_text.py
+!flex/interactive/sdk/python/gs_interactive/models/time_stamp_type.py
+!flex/interactive/sdk/python/gs_interactive/models/date_type.py
 
+flex/interactive/sdk/master/.github/
+flex/interactive/sdk/master/Dockerfile
+flex/interactive/sdk/master/git_push.sh
+flex/interactive/sdk/master/tox.ini
+flex/interactive/sdk/master/.travis.yml
+flex/interactive/sdk/master/.dockerignore
+flex/interactive/sdk/master/.gitignore
+flex/interactive/sdk/master/gs_interactive_admin/models/
+flex/interactive/sdk/master/gs_interactive_admin/typing_utils.py
+
+interactive_engine/groot-http/src/main/java/com/alibaba/graphscope/groot/service/models/
+interactive_engine/groot-http/.openapi-generator/
+interactive_engine/groot-http/src/main/java/org/
+interactive_engine/groot-http/src/main/resources/
+interactive_engine/groot-http/src/main/java/com/alibaba/graphscope/groot/service/api/V1Api.java
+!interactive_engine/groot-http/src/main/java/com/alibaba/graphscope/groot/service/models/GSDataType.java
+!interactive_engine/groot-http/src/main/java/com/alibaba/graphscope/groot/service/models/StringTypeString.java
+!interactive_engine/groot-http/src/main/java/com/alibaba/graphscope/groot/service/models/TemporalTypeTemporal.java
+interactive_engine/groot-http/src/test/
+interactive_engine/groot-http/src/main/java/com/alibaba/graphscope/groot/RFC3339DateFormat.java
 
 **/.cache/
+
+**/*.ci-friendly-pom.xml
+**/dependency-reduced-pom.xml

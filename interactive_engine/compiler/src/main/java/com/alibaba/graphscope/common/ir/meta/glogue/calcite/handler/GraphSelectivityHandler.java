@@ -16,24 +16,29 @@
 
 package com.alibaba.graphscope.common.ir.meta.glogue.calcite.handler;
 
+import com.alibaba.graphscope.common.ir.meta.glogue.Utils;
+import com.alibaba.graphscope.common.ir.rel.GraphPattern;
 import com.alibaba.graphscope.common.ir.rel.graph.AbstractBindableTableScan;
+import com.alibaba.graphscope.common.ir.rel.graph.GraphLogicalExpand;
+import com.alibaba.graphscope.common.ir.rel.graph.GraphLogicalGetV;
+import com.alibaba.graphscope.common.ir.rel.graph.GraphLogicalSource;
+import com.alibaba.graphscope.common.ir.rel.metadata.glogue.pattern.*;
+import com.alibaba.graphscope.common.ir.rel.metadata.schema.EdgeTypeId;
 import com.alibaba.graphscope.common.ir.rex.RexGraphVariable;
 import com.alibaba.graphscope.common.ir.rex.RexVariableAliasCollector;
 import com.alibaba.graphscope.common.ir.tools.AliasInference;
-import com.alibaba.graphscope.common.ir.type.GraphNameOrId;
-import com.alibaba.graphscope.common.ir.type.GraphProperty;
+import com.alibaba.graphscope.common.ir.tools.config.GraphOpt;
 import com.alibaba.graphscope.common.ir.type.GraphSchemaType;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 
 import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.rel.RelNode;
-import org.apache.calcite.rel.core.*;
+import org.apache.calcite.rel.core.TableScan;
 import org.apache.calcite.rel.metadata.BuiltInMetadata;
 import org.apache.calcite.rel.metadata.RelMdSelectivity;
 import org.apache.calcite.rel.metadata.RelMdUtil;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
-import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
@@ -44,6 +49,7 @@ import org.apache.calcite.util.Sarg;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
 import java.util.List;
+import java.util.stream.Collectors;
 
 public class GraphSelectivityHandler extends RelMdSelectivity
         implements BuiltInMetadata.Selectivity.Handler {
@@ -54,22 +60,8 @@ public class GraphSelectivityHandler extends RelMdSelectivity
             RelNode node, RelMetadataQuery mq, @Nullable RexNode condition) {
         if (node instanceof TableScan) {
             return getSelectivity((TableScan) node, mq, condition);
-        } else if (node instanceof TableScan) {
-            return getSelectivity((TableScan) node, mq, condition);
-        } else if (node instanceof Filter) {
-            return getSelectivity((Filter) node, mq, condition);
-        } else if (node instanceof Aggregate) {
-            return getSelectivity((Aggregate) node, mq, condition);
-        } else if (node instanceof Sort) {
-            return getSelectivity((Sort) node, mq, condition);
-        } else if (node instanceof Project) {
-            return getSelectivity((Project) node, mq, condition);
-        } else if (node instanceof Join) {
-            return getSelectivity((Join) node, mq, condition);
-        } else if (node instanceof Union) {
-            return getSelectivity((Union) node, mq, condition);
         }
-        throw new IllegalArgumentException("can not estimate selectivity for the node=" + node);
+        return RelMdUtil.guessSelectivity(condition);
     }
 
     @Override
@@ -104,7 +96,7 @@ public class GraphSelectivityHandler extends RelMdSelectivity
         for (Pair varTableScan : condition.accept(varTableScanCollector)) {
             RexGraphVariable var = (RexGraphVariable) varTableScan.left;
             TableScan scan = (TableScan) varTableScan.right;
-            double count = mq.getRowCount(scan);
+            double count = getFullRowCount(scan, mq);
             if (isUniqueKey(var, scan) && count > maxCountForUniqueKeys) {
                 maxCountForUniqueKeys = count;
             }
@@ -137,7 +129,9 @@ public class GraphSelectivityHandler extends RelMdSelectivity
             case KEY:
                 GraphSchemaType schemaType =
                         (GraphSchemaType) tableScan.getRowType().getFieldList().get(0).getType();
-                ImmutableBitSet propertyIds = getPropertyIds(var.getProperty(), schemaType);
+                ImmutableBitSet propertyIds =
+                        com.alibaba.graphscope.common.ir.tools.Utils.getPropertyIds(
+                                var.getProperty(), schemaType);
                 if (!propertyIds.isEmpty() && tableScan.getTable().isKey(propertyIds)) {
                     return true;
                 }
@@ -147,21 +141,6 @@ public class GraphSelectivityHandler extends RelMdSelectivity
             default:
                 return false;
         }
-    }
-
-    private ImmutableBitSet getPropertyIds(GraphProperty property, GraphSchemaType schemaType) {
-        if (property.getOpt() != GraphProperty.Opt.KEY) return ImmutableBitSet.of();
-        GraphNameOrId key = property.getKey();
-        if (key.getOpt() == GraphNameOrId.Opt.ID) {
-            return ImmutableBitSet.of(key.getId());
-        }
-        for (int i = 0; i < schemaType.getFieldList().size(); ++i) {
-            RelDataTypeField field = schemaType.getFieldList().get(i);
-            if (field.getName().equals(key.getName())) {
-                return ImmutableBitSet.of(i);
-            }
-        }
-        return ImmutableBitSet.of();
     }
 
     private TableScan getTableScanByAlias(RelNode top, int aliasId) {
@@ -176,5 +155,55 @@ public class GraphSelectivityHandler extends RelMdSelectivity
             queue.addAll(cur.getInputs());
         }
         return null;
+    }
+
+    // get row count of the vertex or the edge without filtering conditions
+    private double getFullRowCount(TableScan rel, RelMetadataQuery mq) {
+        if (rel instanceof GraphLogicalSource || rel instanceof GraphLogicalGetV) {
+            List<Integer> vertexTypeIds = Utils.getVertexTypeIds(rel);
+            PatternVertex vertex =
+                    (vertexTypeIds.size() == 1)
+                            ? new SinglePatternVertex(vertexTypeIds.get(0))
+                            : new FuzzyPatternVertex(vertexTypeIds);
+            return mq.getRowCount(
+                    new GraphPattern(rel.getCluster(), rel.getTraitSet(), new Pattern(vertex)));
+        } else if (rel instanceof GraphLogicalExpand) {
+            List<EdgeTypeId> edgeTypeIds = Utils.getEdgeTypeIds(rel);
+            List<Integer> srcVertexTypeIds =
+                    edgeTypeIds.stream().map(k -> k.getSrcLabelId()).collect(Collectors.toList());
+            List<Integer> dstVertexTypeIds =
+                    edgeTypeIds.stream().map(k -> k.getDstLabelId()).collect(Collectors.toList());
+            PatternVertex srcVertex =
+                    (srcVertexTypeIds.size() == 1)
+                            ? new SinglePatternVertex(srcVertexTypeIds.get(0), 0)
+                            : new FuzzyPatternVertex(srcVertexTypeIds, 0);
+            PatternVertex dstVertex =
+                    (dstVertexTypeIds.size() == 1)
+                            ? new SinglePatternVertex(dstVertexTypeIds.get(0), 1)
+                            : new FuzzyPatternVertex(dstVertexTypeIds, 1);
+            boolean isBoth = ((GraphLogicalExpand) rel).getOpt() == GraphOpt.Expand.BOTH;
+            PatternEdge edge =
+                    (edgeTypeIds.size() == 1)
+                            ? new SinglePatternEdge(
+                                    srcVertex,
+                                    dstVertex,
+                                    edgeTypeIds.get(0),
+                                    0,
+                                    isBoth,
+                                    new ElementDetails())
+                            : new FuzzyPatternEdge(
+                                    srcVertex,
+                                    dstVertex,
+                                    edgeTypeIds,
+                                    0,
+                                    isBoth,
+                                    new ElementDetails());
+            Pattern pattern = new Pattern();
+            pattern.addVertex(srcVertex);
+            pattern.addVertex(dstVertex);
+            pattern.addEdge(srcVertex, dstVertex, edge);
+            return mq.getRowCount(new GraphPattern(rel.getCluster(), rel.getTraitSet(), pattern));
+        }
+        throw new IllegalArgumentException("can not estimate row count for the rel=" + rel);
     }
 }

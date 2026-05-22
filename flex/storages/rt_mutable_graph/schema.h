@@ -31,21 +31,48 @@ class Schema {
   // How many built-in plugins are there.
   // Currently only one builtin plugin, SERVER_APP is supported.
   static constexpr uint8_t RESERVED_PLUGIN_NUM = 1;
-  static constexpr uint8_t MAX_PLUGIN_ID = 252;
+  static constexpr uint8_t MAX_PLUGIN_ID = 245;
+  static constexpr uint8_t ADHOC_READ_PLUGIN_ID = 253;
   static constexpr uint8_t HQPS_ADHOC_READ_PLUGIN_ID = 254;
   static constexpr uint8_t HQPS_ADHOC_WRITE_PLUGIN_ID = 255;
-  static constexpr uint8_t ADHOC_READ_PLUGIN_ID = 253;
+
+  static constexpr uint8_t CYPHER_READ_PLUGIN_ID = 248;
+  static constexpr uint8_t CYPHER_WRITE_PLUGIN_ID = 247;
+  static constexpr uint8_t CYPHER_READ_DEBUG_PLUGIN_ID = 246;
   static constexpr const char* HQPS_ADHOC_READ_PLUGIN_ID_STR = "\xFE";
   static constexpr const char* HQPS_ADHOC_WRITE_PLUGIN_ID_STR = "\xFF";
   static constexpr const char* ADHOC_READ_PLUGIN_ID_STR = "\xFD";
+  static constexpr const char* CYPHER_READ_DEBUG_PLUGIN_ID_STR = "\xF6";
   static constexpr const char* PRIMITIVE_TYPE_KEY = "primitive_type";
   static constexpr const char* VARCHAR_KEY = "varchar";
   static constexpr const char* MAX_LENGTH_KEY = "max_length";
-  static constexpr const uint16_t STRING_DEFAULT_MAX_LENGTH = 256;
+
+  // The builtin plugins are reserved for the system.
+  static constexpr uint8_t BUILTIN_PLUGIN_NUM = 4;
+
+  static constexpr uint8_t BUILTIN_COUNT_VERTICES_PLUGIN_ID = 252;
+  static constexpr const char* BUILTIN_COUNT_VERTICES_PLUGIN_NAME =
+      "count_vertices";
+  static constexpr uint8_t BUILTIN_PAGERANK_PLUGIN_ID = 251;
+  static constexpr const char* BUILTIN_PAGERANK_PLUGIN_NAME = "pagerank";
+  static constexpr uint8_t BUILTIN_K_DEGREE_NEIGHBORS_PLUGIN_ID = 250;
+  static constexpr const char* BUILTIN_K_DEGREE_NEIGHBORS_PLUGIN_NAME =
+      "k_neighbors";
+  static constexpr uint8_t BUILTIN_TVSP_PLUGIN_ID = 249;
+  static constexpr const char* BUILTIN_TVSP_PLUGIN_NAME =
+      "shortest_path_among_three";
+  static constexpr const char* BUILTIN_PLUGIN_NAMES[BUILTIN_PLUGIN_NUM] = {
+      BUILTIN_COUNT_VERTICES_PLUGIN_NAME, BUILTIN_PAGERANK_PLUGIN_NAME,
+      BUILTIN_K_DEGREE_NEIGHBORS_PLUGIN_NAME, BUILTIN_TVSP_PLUGIN_NAME};
+  static constexpr uint8_t BUILTIN_PLUGIN_IDS[BUILTIN_PLUGIN_NUM] = {
+      BUILTIN_COUNT_VERTICES_PLUGIN_ID, BUILTIN_PAGERANK_PLUGIN_ID,
+      BUILTIN_K_DEGREE_NEIGHBORS_PLUGIN_ID, BUILTIN_TVSP_PLUGIN_ID};
 
   // An array containing all compatible versions of schema.
   static const std::vector<std::string> COMPATIBLE_VERSIONS;
   static constexpr const char* DEFAULT_SCHEMA_VERSION = "v0.0";
+
+  static bool IsBuiltinPlugin(const std::string& plugin_name);
 
   using label_type = label_t;
   Schema();
@@ -121,6 +148,10 @@ class Schema {
                                                        label_t dst_label,
                                                        label_t label) const;
 
+  const std::string& get_compiler_path() const;
+
+  void set_compiler_path(const std::string& compiler_path);
+
   std::string get_edge_description(const std::string& src_label,
                                    const std::string& dst_label,
                                    const std::string& label) const;
@@ -170,6 +201,20 @@ class Schema {
                                           const std::string& dst_label,
                                           const std::string& label) const;
 
+  inline EdgeStrategy get_outgoing_edge_strategy(label_t src_label,
+                                                 label_t dst_label,
+                                                 label_t label) const {
+    uint32_t index = generate_edge_label(src_label, dst_label, label);
+    return oe_strategy_.at(index);
+  }
+
+  inline EdgeStrategy get_incoming_edge_strategy(label_t src_label,
+                                                 label_t dst_label,
+                                                 label_t label) const {
+    uint32_t index = generate_edge_label(src_label, dst_label, label);
+    return ie_strategy_.at(index);
+  }
+
   bool outgoing_edge_mutable(const std::string& src_label,
                              const std::string& dst_label,
                              const std::string& label) const;
@@ -218,15 +263,30 @@ class Schema {
 
   std::string GetPluginDir() const;
 
+  inline void SetGraphName(const std::string& name) { name_ = name; }
+
+  inline void SetGraphId(const std::string& id) { id_ = id; }
+
+  inline std::string GetGraphName() const { return name_; }
+
+  inline std::string GetGraphId() const { return id_; }
+
   std::string GetDescription() const;
 
   void SetDescription(const std::string& description);
+
+  void SetRemotePath(const std::string& remote_path);
+
+  inline std::string GetRemotePath() const { return remote_path_; }
 
   void SetVersion(const std::string& version);
 
   std::string GetVersion() const;
 
   bool has_multi_props_edge() const;
+
+  const std::unordered_map<std::string, std::pair<PropertyType, uint8_t>>&
+  get_vprop_name_to_type_and_index(label_t label) const;
 
  private:
   label_t vertex_label_to_index(const std::string& label);
@@ -235,6 +295,7 @@ class Schema {
 
   uint32_t generate_edge_label(label_t src, label_t dst, label_t edge) const;
 
+  std::string name_, id_;
   IdIndexer<std::string, label_t> vlabel_indexer_;
   IdIndexer<std::string, label_t> elabel_indexer_;
   std::vector<std::vector<PropertyType>> vproperties_;
@@ -252,6 +313,8 @@ class Schema {
   std::map<uint32_t, bool> oe_mutability_;
   std::map<uint32_t, bool> ie_mutability_;
   std::map<uint32_t, bool> sort_on_compactions_;
+  std::vector<std::unordered_map<std::string, std::pair<PropertyType, uint8_t>>>
+      vprop_name_to_type_and_index_;
   std::vector<size_t> max_vnum_;
   std::unordered_map<std::string, std::pair<std::string, uint8_t>>
       plugin_name_to_path_and_id_;  // key is plugin_name, value is plugin_path
@@ -259,6 +322,8 @@ class Schema {
   std::string plugin_dir_;
   std::string description_;
   std::string version_;
+  std::string compiler_path_;
+  std::string remote_path_;  // The path to the data on the remote storage
   bool has_multi_props_edge_;
 };
 

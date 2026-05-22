@@ -60,4 +60,10 @@ public class FrontendConfig {
 
     public static final Config<Integer> PER_QUERY_STREAM_BUFFER_MAX_CAPACITY =
             Config.intConfig("per.query.stream.buffer.max.capacity", 256);
+
+    public static final Config<Long> QUERY_PRINT_THRESHOLD_MS =
+            Config.longConfig("query.print.threshold.ms", 200l);
+
+    public static final Config<Long> METRICS_TOOL_INTERVAL_MS =
+            Config.longConfig("metrics.tool.interval.ms", 5 * 60 * 1000L);
 }

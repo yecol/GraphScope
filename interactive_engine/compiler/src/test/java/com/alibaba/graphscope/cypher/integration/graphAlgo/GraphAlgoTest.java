@@ -35,7 +35,12 @@ public class GraphAlgoTest {
     public static void beforeClass() {
         String neo4jServerUrl =
                 System.getProperty("neo4j.bolt.server.url", "neo4j://localhost:7687");
-        session = GraphDatabase.driver(neo4jServerUrl).session();
+        // Ensure that the driver is closed properly
+        try {
+            session = GraphDatabase.driver(neo4jServerUrl).session();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to create Neo4j session.", e);
+        }
     }
 
     @Test
@@ -132,6 +137,20 @@ public class GraphAlgoTest {
     @Test
     public void run_graph_query13_test() {
         QueryContext testQuery = GraphAlgoQueries.get_graph_algo_test13();
+        Result result = session.run(testQuery.getQuery());
+        Assert.assertEquals(testQuery.getExpectedResult().toString(), result.list().toString());
+    }
+
+    @Test
+    public void run_graph_query14_test() {
+        QueryContext testQuery = GraphAlgoQueries.get_graph_algo_test14();
+        Result result = session.run(testQuery.getQuery());
+        Assert.assertEquals(testQuery.getExpectedResult().toString(), result.list().toString());
+    }
+
+    @Test
+    public void run_graph_query15_test() {
+        QueryContext testQuery = GraphAlgoQueries.get_graph_algo_test15();
         Result result = session.run(testQuery.getQuery());
         Assert.assertEquals(testQuery.getExpectedResult().toString(), result.list().toString());
     }

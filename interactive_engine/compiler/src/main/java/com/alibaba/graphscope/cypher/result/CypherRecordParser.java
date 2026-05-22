@@ -146,6 +146,7 @@ public class CypherRecordParser implements RecordParser<AnyValue> {
                                 .mapToDouble(k -> k.getObject().getF64())
                                 .toArray());
             case CHAR:
+            case VARCHAR:
                 return Values.stringArray(
                         collection.getCollectionList().stream()
                                 .map(k -> k.getObject().getStr())
@@ -154,6 +155,16 @@ public class CypherRecordParser implements RecordParser<AnyValue> {
                 return VirtualValues.fromList(
                         collection.getCollectionList().stream()
                                 .map(k -> parseElement(k, componentType))
+                                .collect(Collectors.toList()));
+            case ARRAY:
+            case MULTISET:
+                return VirtualValues.fromList(
+                        collection.getCollectionList().stream()
+                                .map(
+                                        k ->
+                                                parseValue(
+                                                        k.getObject(),
+                                                        componentType.getComponentType()))
                                 .collect(Collectors.toList()));
             default:
                 throw new NotImplementedException(
@@ -300,8 +311,14 @@ public class CypherRecordParser implements RecordParser<AnyValue> {
                 return value.getBoolean() ? BooleanValue.TRUE : BooleanValue.FALSE;
             case I32:
                 return Values.intValue(value.getI32());
+            case U32:
+                return Values.intValue(value.getU32());
             case I64:
                 return Values.longValue(value.getI64());
+            case U64:
+                return Values.longValue(value.getU64());
+            case F32:
+                return Values.floatValue(value.getF32());
             case F64:
                 return Values.doubleValue(value.getF64());
             case STR:

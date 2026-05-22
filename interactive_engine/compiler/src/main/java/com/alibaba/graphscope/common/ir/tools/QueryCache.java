@@ -19,47 +19,59 @@ package com.alibaba.graphscope.common.ir.tools;
 import com.alibaba.graphscope.common.config.Configs;
 import com.alibaba.graphscope.common.config.FrontendConfig;
 import com.alibaba.graphscope.common.ir.meta.IrMeta;
-import com.alibaba.graphscope.common.ir.runtime.PhysicalPlan;
+import com.alibaba.graphscope.common.ir.meta.IrMetaStats;
+import com.alibaba.graphscope.common.ir.meta.IrMetaTracker;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Maps;
 
 import org.checkerframework.checker.nullness.qual.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ExecutionException;
 
-public class QueryCache {
+public class QueryCache implements IrMetaTracker {
+    private static final Logger logger = LoggerFactory.getLogger(QueryCache.class);
     private final LoadingCache<Key, Value> cache;
-    private final GraphPlanner graphPlanner;
 
-    public QueryCache(Configs configs, GraphPlanner graphPlanner) {
-        this.graphPlanner = graphPlanner;
+    public QueryCache(Configs configs) {
         int cacheSize = FrontendConfig.QUERY_CACHE_SIZE.get(configs);
         this.cache =
                 CacheBuilder.newBuilder()
                         .maximumSize(cacheSize)
                         .build(
                                 CacheLoader.from(
-                                        key -> {
-                                            PhysicalPlan physicalPlan =
-                                                    key.plannerInstance.planPhysical(
-                                                            key.logicalPlan);
-                                            GraphPlanner.Summary summary =
-                                                    new GraphPlanner.Summary(
-                                                            key.logicalPlan, physicalPlan);
-                                            return new Value(summary, null);
-                                        }));
+                                        key ->
+                                                new Value(
+                                                        key.instance.plan(),
+                                                        null,
+                                                        ImmutableMap.of(
+                                                                "instance", key.instance))));
+    }
+
+    @Override
+    public void onSchemaChanged(IrMeta meta) {
+        cache.invalidateAll();
+    }
+
+    @Override
+    public void onStatsChanged(IrMetaStats stats) {
+        // do nothing
     }
 
     public class Key {
-        public final GraphPlanner.PlannerInstance plannerInstance;
+        public final GraphPlanner.PlannerInstance instance;
         public final LogicalPlan logicalPlan;
 
-        public Key(String query, IrMeta irMeta) {
-            this.plannerInstance = Objects.requireNonNull(graphPlanner.instance(query, irMeta));
-            this.logicalPlan = Objects.requireNonNull(this.plannerInstance.planLogical());
+        public Key(GraphPlanner.PlannerInstance instance) {
+            this.instance = instance;
+            this.logicalPlan = instance.getParsedPlan();
         }
 
         @Override
@@ -76,17 +88,23 @@ public class QueryCache {
         }
     }
 
-    public Key createKey(String query, IrMeta irMeta) {
-        return new Key(query, irMeta);
+    public Key createKey(GraphPlanner.PlannerInstance instance) {
+        return new Key(instance);
     }
 
     public static class Value {
         public final GraphPlanner.Summary summary;
         public @Nullable Result result;
+        public final Map<String, Object> debugInfo;
 
         public Value(GraphPlanner.Summary summary, Result result) {
+            this(summary, result, Maps.newHashMap());
+        }
+
+        public Value(GraphPlanner.Summary summary, Result result, Map<String, Object> debugInfo) {
             this.summary = Objects.requireNonNull(summary);
             this.result = result;
+            this.debugInfo = debugInfo;
         }
     }
 

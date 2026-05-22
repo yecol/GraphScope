@@ -45,7 +45,12 @@ ServiceConfig::ServiceConfig()
       start_compiler(false),
       enable_gremlin(false),
       enable_bolt(false),
-      metadata_store_type_(gs::MetadataStoreType::kLocalFile) {}
+      metadata_store_type_(gs::MetadataStoreType::kLocalFile),
+      log_level(DEFAULT_LOG_LEVEL),
+      verbose_level(DEFAULT_VERBOSE_LEVEL),
+      sharding_mode(DEFAULT_SHARDING_MODE),
+      admin_svc_max_content_length(DEFAULT_MAX_CONTENT_LENGTH),
+      wal_uri(DEFAULT_WAL_URI) {}
 
 const std::string GraphDBService::DEFAULT_GRAPH_NAME = "modern_graph";
 const std::string GraphDBService::DEFAULT_INTERACTIVE_HOME = "/opt/flex/";
@@ -57,6 +62,53 @@ GraphDBService& GraphDBService::get() {
   return instance;
 }
 
+void openGraph(const gs::GraphId& graph_id,
+               const ServiceConfig& service_config) {
+  auto workspace = server::WorkDirManipulator::GetWorkspace();
+  if (!std::filesystem::exists(workspace)) {
+    LOG(ERROR) << "Workspace directory not exists: " << workspace;
+  }
+  if (graph_id.empty()) {
+    LOG(FATAL) << "No graph is specified";
+    return;
+  }
+  auto data_dir_path =
+      workspace + "/" + server::WorkDirManipulator::DATA_DIR_NAME;
+  if (!std::filesystem::exists(data_dir_path)) {
+    LOG(ERROR) << "Data directory not exists: " << data_dir_path;
+    return;
+  }
+
+  auto& db = gs::GraphDB::get();
+  auto schema_path = server::WorkDirManipulator::GetGraphSchemaPath(graph_id);
+  auto schema_res = gs::Schema::LoadFromYaml(schema_path);
+  if (!schema_res.ok()) {
+    LOG(FATAL) << "Fail to load graph schema from yaml file: " << schema_path;
+  }
+  auto data_dir_res = server::WorkDirManipulator::GetDataDirectory(graph_id);
+  if (!data_dir_res.ok()) {
+    LOG(FATAL) << "Fail to get data directory for default graph: "
+               << data_dir_res.status().error_message();
+  }
+  std::string data_dir = data_dir_res.value();
+  if (!std::filesystem::exists(data_dir)) {
+    LOG(FATAL) << "Data directory not exists: " << data_dir
+               << ", for graph: " << graph_id;
+  }
+  db.Close();
+  gs::GraphDBConfig config(schema_res.value(), data_dir, "",
+                           service_config.shard_num);
+  config.memory_level = service_config.memory_level;
+  config.wal_uri = service_config.wal_uri;
+  if (config.memory_level >= 2) {
+    config.enable_auto_compaction = true;
+  }
+  if (!db.Open(config).ok()) {
+    LOG(FATAL) << "Fail to load graph from data directory: " << data_dir;
+  }
+  LOG(INFO) << "Successfully init graph db for graph: " << graph_id;
+}
+
 void GraphDBService::init(const ServiceConfig& config) {
   if (initialized_.load(std::memory_order_relaxed)) {
     std::cerr << "High QPS service has been already initialized!" << std::endl;
@@ -65,10 +117,15 @@ void GraphDBService::init(const ServiceConfig& config) {
   actor_sys_ = std::make_unique<actor_system>(
       config.shard_num, config.dpdk_mode, config.enable_thread_resource_pool,
       config.external_thread_num, [this]() { set_exit_state(); });
+  // NOTE that in sharding mode EXCLUSIVE, the last shard is reserved for admin
+  //  requests.
   query_hdl_ = std::make_unique<graph_db_http_handler>(
-      config.query_port, config.shard_num, config.enable_adhoc_handler);
+      config.query_port, config.shard_num, config.get_cooperative_shard_num(),
+      config.enable_adhoc_handler);
   if (config.start_admin_service) {
-    admin_hdl_ = std::make_unique<admin_http_handler>(config.admin_port);
+    admin_hdl_ = std::make_unique<admin_http_handler>(
+        config.admin_port, config.get_exclusive_shard_id(),
+        config.admin_svc_max_content_length);
   }
 
   initialized_.store(true);
@@ -85,15 +142,56 @@ void GraphDBService::init(const ServiceConfig& config) {
       return;
     }
     LOG(INFO) << "Metadata store opened successfully.";
-    gs::GraphId default_graph_id = insert_default_graph_meta();
-    auto set_res = metadata_store_->SetRunningGraph(default_graph_id);
+    // If there is no graph in the metadata store, insert the default graph.
+    auto graph_metas_res = metadata_store_->GetAllGraphMeta();
+    if (!graph_metas_res.ok()) {
+      LOG(FATAL) << "Failed to get graph metas: "
+                 << graph_metas_res.status().error_message();
+    }
+    gs::GraphId cur_graph_id = "";
+    // Try to launch service on the previous running graph.
+    auto running_graph_res = metadata_store_->GetRunningGraph();
+    if (running_graph_res.ok() && !running_graph_res.value().empty()) {
+      cur_graph_id = running_graph_res.value();
+      // make sure the cur_graph_id is in the graph_metas_res.
+      auto it = std::find_if(graph_metas_res.value().begin(),
+                             graph_metas_res.value().end(),
+                             [&cur_graph_id](const gs::GraphMeta& meta) {
+                               return meta.id == cur_graph_id;
+                             });
+      if (it == graph_metas_res.value().end()) {
+        LOG(ERROR) << "The running graph: " << cur_graph_id
+                   << " is not in the metadata store, maybe the metadata is "
+                      "corrupted.";
+        cur_graph_id = "";
+      }
+    }
+    if (cur_graph_id.empty()) {
+      if (!graph_metas_res.value().empty()) {
+        LOG(INFO) << "There are already " << graph_metas_res.value().size()
+                  << " graph metas in the metadata store.";
+        // return the graph id with the smallest value.
+        cur_graph_id =
+            (std::min_element(
+                 graph_metas_res.value().begin(), graph_metas_res.value().end(),
+                 [](const gs::GraphMeta& a, const gs::GraphMeta& b) {
+                   return a.id < b.id;
+                 }))
+                ->id;
+      } else {
+        cur_graph_id = insert_default_graph_meta();
+      }
+    }
+    // open the graph with the default graph id.
+    openGraph(cur_graph_id, service_config_);
+    auto set_res = metadata_store_->SetRunningGraph(cur_graph_id);
     if (!set_res.ok()) {
       LOG(FATAL) << "Failed to set running graph: "
                  << res.status().error_message();
       return;
     }
 
-    auto lock_res = metadata_store_->LockGraphIndices(default_graph_id);
+    auto lock_res = metadata_store_->LockGraphIndices(cur_graph_id);
     if (!lock_res.ok()) {
       LOG(FATAL) << lock_res.status().error_message();
       return;
@@ -378,28 +476,6 @@ std::string GraphDBService::find_interactive_class_path() {
 }
 
 gs::GraphId GraphDBService::insert_default_graph_meta() {
-  if (!metadata_store_) {
-    LOG(FATAL) << "Metadata store has not been inited!" << std::endl;
-  }
-  // If there is no graph in the metadata store, insert the default graph.
-  auto graph_metas_res = metadata_store_->GetAllGraphMeta();
-  if (!graph_metas_res.ok()) {
-    LOG(FATAL) << "Failed to get graph metas: "
-               << graph_metas_res.status().error_message();
-  }
-  if (!graph_metas_res.value().empty()) {
-    LOG(INFO) << "There are already " << graph_metas_res.value().size()
-              << " graph metas in the metadata store.";
-
-    // return the graph id with the smallest value.
-    auto min_graph_id = std::min_element(
-        graph_metas_res.value().begin(), graph_metas_res.value().end(),
-        [](const gs::GraphMeta& a, const gs::GraphMeta& b) {
-          return a.id < b.id;
-        });
-    return min_graph_id->id;
-  }
-
   auto default_graph_name = this->service_config_.default_graph;
   auto schema_str_res =
       WorkDirManipulator::GetGraphSchemaString(default_graph_name);
@@ -407,7 +483,13 @@ gs::GraphId GraphDBService::insert_default_graph_meta() {
     LOG(FATAL) << "Failed to get graph schema string: "
                << schema_str_res.status().error_message();
   }
-  auto request = gs::CreateGraphMetaRequest::FromJson(schema_str_res.value());
+  auto request_res =
+      gs::CreateGraphMetaRequest::FromJson(schema_str_res.value());
+  if (!request_res.ok()) {
+    LOG(FATAL) << "Failed to parse graph schema string: "
+               << request_res.status().error_message();
+  }
+  auto request = request_res.value();
   request.data_update_time = gs::GetCurrentTimeStamp();
 
   auto res = metadata_store_->CreateGraphMeta(request);

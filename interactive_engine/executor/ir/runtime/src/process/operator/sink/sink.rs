@@ -252,6 +252,7 @@ impl RecordSinkEncoder {
             EntryType::Pair => {
                 unreachable!()
             }
+            EntryType::Null => Some(result_pb::element::Inner::Object(Object::None.into())),
         };
         result_pb::Element { inner }
     }
@@ -355,7 +356,7 @@ impl RecordSinkEncoder {
     fn path_to_pb(&self, p: &GraphPath) -> result_pb::GraphPath {
         let mut graph_path_pb = vec![];
         match p {
-            GraphPath::AllPath(path) | GraphPath::SimpleAllPath(path) => {
+            GraphPath::AllPath(path) | GraphPath::SimpleAllPath(path) | GraphPath::TrailAllPath(path) => {
                 for vertex_or_edge in path {
                     let vertex_or_edge_pb = self.vertex_or_edge_to_pb(vertex_or_edge);
                     graph_path_pb.push(vertex_or_edge_pb);

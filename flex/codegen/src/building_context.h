@@ -26,6 +26,8 @@ namespace gs {
 static constexpr const char* time_stamp = "time_stamp";
 static constexpr const char* graph_var = "graph";
 static constexpr const char* GRAPE_INTERFACE_CLASS = "gs::MutableCSRInterface";
+static constexpr const char* SESSION_VAR = "sess";
+static constexpr const char* SESSION_CLASS_NAME = "GraphDBSession";
 static constexpr const char* GRAPE_INTERFACE_HEADER =
     "flex/engines/hqps_db/database/mutable_csr_interface.h";
 static constexpr const char* EDGE_EXPAND_OPT_NAME = "edge_expand_opt";
@@ -126,9 +128,7 @@ struct TagIndMapping {
            tag_id_2_tag_inds_[tag_id] != -1;
   }
 
-  int32_t GetMaxTagId() const {
-    return tag_id_2_tag_inds_.size() - 1;
-  }
+  int32_t GetMaxTagId() const { return tag_id_2_tag_inds_.size() - 1; }
 
   // convert tag_ind (us) to tag ids
   std::vector<int32_t> tag_ind_2_tag_ids_;
@@ -181,7 +181,7 @@ class BuildingContext {
   // int32_t GetCurrentCtxId() const { return ctx_id_; }
   bool EmptyContext() const { return ctx_id_ == 0; }
 
-  // return a pair indicate the direction of assigning, also increate cur ctx id
+  // return a pair indicate the direction of assigning, also increase cur ctx id
   std::pair<std::string, std::string> GetPrevAndNextCtxName() {
     std::string ctx_name = ctx_prefix_ + CONTEXT_NAME + std::to_string(ctx_id_);
     std::string ctx_name2 =
@@ -259,7 +259,7 @@ class BuildingContext {
 
   std::string ContextPrefix() const { return ctx_prefix_; }
 
-  BuildingContext CreateSubTaskContext(std::string sufix = "inner_") {
+  BuildingContext CreateSubTaskContext(std::string suffix = "inner_") {
     BuildingContext ctx;
     ctx.storage_backend_ = storage_backend_;
     ctx.query_name_ = query_name_;
@@ -271,7 +271,7 @@ class BuildingContext {
     ctx.graph_interface_ = graph_interface_;
     ctx.app_base_header_ = app_base_header_;
     ctx.graph_header_ = graph_header_;
-    ctx.ctx_prefix_ = ctx_prefix_ + sufix;
+    ctx.ctx_prefix_ = ctx_prefix_ + suffix;
     ctx.tag_ind_mapping_ = tag_ind_mapping_;
 
     ctx.contain_head_ = contain_head_;
@@ -289,8 +289,8 @@ class BuildingContext {
     contain_head_ = ctx.contain_head_;
   }
 
-  void AppendContextPrefix(const std::string sufix) {
-    ctx_prefix_ = ctx_prefix_ + sufix;
+  void AppendContextPrefix(const std::string suffix) {
+    ctx_prefix_ = ctx_prefix_ + suffix;
   }
 
   // void IncCtxId() { ++ctx_id_; }
@@ -304,6 +304,10 @@ class BuildingContext {
   std::string TimeStampVar() const { return time_stamp; }
 
   std::string GraphVar() const { return graph_var; }
+
+  std::string SessionVar() const { return SESSION_VAR; }
+
+  std::string GetSessionTypeName() const { return SESSION_CLASS_NAME; }
 
   void AddParameterVar(const codegen::ParamConst& var) {
     parameter_vars_.emplace_back(var);
