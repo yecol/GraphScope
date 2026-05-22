@@ -8,7 +8,14 @@ import pytest
 
 
 def _load_client_utils_module():
-    repo_root = Path(__file__).resolve().parents[5]
+    current = Path(__file__).resolve()
+    repo_root = None
+    for candidate in current.parents:
+        if (candidate / ".git").exists():
+            repo_root = candidate
+            break
+    if repo_root is None:
+        raise RuntimeError("Cannot locate repository root from test path")
     module_path = (
         repo_root
         / "flex"
@@ -59,6 +66,7 @@ def test_append_format_byte_rejects_bytes_input():
         append_format_byte(b"hello", input_format=InputFormat.CPP_ENCODER)
 
 
-def test_append_format_byte_requires_enum_like_input_format():
+@pytest.mark.parametrize("bad_input_format", [None, 1, "cpp"])
+def test_append_format_byte_rejects_invalid_input_format(bad_input_format):
     with pytest.raises(AttributeError):
-        append_format_byte("hello", input_format=None)
+        append_format_byte("hello", input_format=bad_input_format)
