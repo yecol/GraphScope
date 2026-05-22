@@ -50,6 +50,48 @@
       </modules>
     </profile>
     <profile>
+      <id>graph-planner-jni</id>
+      <properties>
+        <skip.native>false</skip.native>
+        <skip.ir.core>true</skip.ir.core>
+      </properties>
+      <activation>
+        <activeByDefault>false</activeByDefault>
+      </activation>
+      <modules>
+        <module>common</module>
+        <module>executor/engine/pegasus/clients/java/client</module>
+        <module>compiler</module>
+        <module>assembly</module>
+      </modules>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-antrun-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>make</id>
+                <goals>
+                  <goal>run</goal>
+                </goals>
+                <phase>compile</phase>
+                <configuration>
+                  <target>
+                    <ant antfile="compiler/build_native.xml">
+                      <target name="graph_planner"></target>
+                    </ant>
+                  </target>
+                  <skip>${skip.native}</skip>
+                </configuration>
+              </execution>
+            </executions>
+            <inherited>false</inherited>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
       <id>graphscope</id>
       <activation>
         <activeByDefault>true</activeByDefault>
@@ -71,6 +113,7 @@
       <properties>
         <rust.compile.target>groot</rust.compile.target>
         <scala.version>2.13.9</scala.version>
+        <neo4j.version>4.4.0-SHADED</neo4j.version>
       </properties>
       <modules>
         <module>assembly</module>
@@ -79,9 +122,36 @@
         <module>groot-module</module>
         <module>groot-server</module>
         <module>groot-client</module>
+        <module>groot-http</module>
         <module>executor/engine/pegasus/clients/java/client</module>
         <module>compiler</module>
       </modules>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>shade-neo4j</id>
+                <phase>validate</phase>
+                <goals>
+                  <goal>exec</goal>
+                </goals>
+                <configuration>
+                  <executable>mvn</executable>
+                  <arguments>
+                    <argument>-f</argument>
+                    <argument>neo4j-shaded/pom.xml</argument>
+                    <argument>install</argument>
+                  </arguments>
+                </configuration>
+              </execution>
+            </executions>
+            <inherited>false</inherited>
+          </plugin>
+        </plugins>
+      </build>
     </profile>
     <profile>
       <id>groot-data-load</id>
@@ -225,7 +295,11 @@
     <maven.compiler.target>1.8</maven.compiler.target>
 
     <neo4j.version>4.4.0</neo4j.version>
-    <interactive.sdk.version>0.4</interactive.sdk.version>
+    <neo4j.driver.version>4.4.0</neo4j.driver.version>
+    <interactive.sdk.version>0.4.4</interactive.sdk.version>
+    <interactive.sdk.classifier>no-gaia-ir</interactive.sdk.classifier>
+
+    <spring-boot.version>2.7.15</spring-boot.version>
   </properties>
 
   <dependencyManagement>
@@ -357,6 +431,12 @@
         <groupId>org.apache.tinkerpop</groupId>
         <artifactId>gremlin-test</artifactId>
         <version>${tinkerpop.version}</version>
+        <exclusions>
+          <exclusion>
+            <groupId>org.apache.kerby</groupId>
+            <artifactId>kerb-simplekdc</artifactId>
+          </exclusion>
+        </exclusions>
         <scope>compile</scope>
       </dependency>
       <dependency>
@@ -647,7 +727,7 @@
       <dependency>
         <groupId>org.neo4j.driver</groupId>
         <artifactId>neo4j-java-driver</artifactId>
-        <version>${neo4j.version}</version>
+        <version>${neo4j.driver.version}</version>
         <scope>test</scope>
       </dependency>
       <dependency>
@@ -667,7 +747,28 @@
         <groupId>com.alibaba.graphscope</groupId>
         <artifactId>interactive</artifactId>
         <version>${interactive.sdk.version}</version>
+        <classifier>${interactive.sdk.classifier}</classifier>
       </dependency>
+
+      <!-- Spring Boot -->
+      <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+            <version>${spring-boot.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <version>${spring-boot.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-parent</artifactId>
+            <version>${spring-boot.version}</version>
+            <scope>import</scope>
+            <type>pom</type>
+        </dependency>
     </dependencies>
   </dependencyManagement>
 
@@ -705,10 +806,6 @@
         <plugin>
           <artifactId>maven-deploy-plugin</artifactId>
           <version>${maven.deploy.version}</version>
-        </plugin>
-        <plugin>
-          <artifactId>maven-shade-plugin</artifactId>
-          <version>${maven.shade.version}</version>
         </plugin>
         <plugin>
           <artifactId>maven-assembly-plugin</artifactId>
@@ -831,27 +928,16 @@
       </plugins>
     </pluginManagement>
     <plugins>
+      <!-- use flatten plugin to replace revision property value in mvn install,otherwise the version
+        of the locallly installed submodle(like compiler) is ${revision} -->
       <plugin>
-        <groupId>org.codehaus.mojo</groupId>
-        <artifactId>flatten-maven-plugin</artifactId>
-        <version>${flatten.maven.plugin}</version>
-        <configuration>
-          <updatePomFile>true</updatePomFile>
-          <flattenMode>resolveCiFriendliesOnly</flattenMode>
-        </configuration>
+        <groupId>com.outbrain.swinfra</groupId>
+        <artifactId>ci-friendly-flatten-maven-plugin</artifactId>
         <executions>
           <execution>
-            <id>flatten</id>
-            <phase>process-resources</phase>
-            <goals>
-              <goal>flatten</goal>
-            </goals>
-          </execution>
-          <execution>
-            <id>flatten.clean</id>
-            <phase>clean</phase>
             <goals>
               <goal>clean</goal>
+              <goal>flatten</goal>
             </goals>
           </execution>
         </executions>
@@ -869,6 +955,16 @@
             </goals>
           </execution>
         </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-antrun-plugin</artifactId>
+        <version>3.0.0</version>
+      </plugin>
+      <plugin>
+          <groupId>org.springframework.boot</groupId>
+          <artifactId>spring-boot-maven-plugin</artifactId>
+          <version>${spring-boot.version}</version>
       </plugin>
     </plugins>
   </build>

@@ -26,8 +26,8 @@
 #include "flex/utils/result.h"
 #include "flex/utils/service_utils.h"
 
+#include <rapidjson/document.h>
 #include <yaml-cpp/yaml.h>
-#include "nlohmann/json.hpp"
 
 namespace gs {
 
@@ -39,6 +39,7 @@ using JobId = std::string;
 struct Parameter {
   std::string name;
   PropertyType type;
+  bool allow_cast{false};
 
   std::string ToJson() const;
 };
@@ -52,11 +53,16 @@ enum class JobStatus {
 };
 
 JobStatus parseFromString(const std::string& status_string);
+Result<std::string> preprocess_and_check_schema_json_string(
+    const std::string& json_str);
 
 ////////////////// MetaData ///////////////////////
 struct PluginMeta;
+const std::vector<PluginMeta>& get_builtin_plugin_metas();
+
 struct GraphMeta {
   GraphId id;
+  std::string version;
   std::string name;
   std::string description;
   uint64_t creation_time;
@@ -68,8 +74,10 @@ struct GraphMeta {
   std::vector<PluginMeta> plugin_metas;
 
   std::string ToJson() const;
+  void ToJson(rapidjson::Value& json,
+              rapidjson::Document::AllocatorType& allocator) const;
   static GraphMeta FromJson(const std::string& json_str);
-  static GraphMeta FromJson(const nlohmann::json& json);
+  static GraphMeta FromJson(const rapidjson::Value& json);
 };
 
 struct PluginMeta {
@@ -90,16 +98,18 @@ struct PluginMeta {
   uint64_t creation_time;
   uint64_t update_time;
 
-  void setParamsFromJsonString(const std::string& json_str);
+  void setParamsFromJsonString(const rapidjson::Value& json);
 
-  void setReturnsFromJsonString(const std::string& json_str);
+  void setReturnsFromJsonString(const rapidjson::Value& json);
 
   void setOptionFromJsonString(const std::string& json_str);
 
   std::string ToJson() const;
+  void ToJson(rapidjson::Value& json,
+              rapidjson::Document::AllocatorType& allocator) const;
 
   static PluginMeta FromJson(const std::string& json_str);
-  static PluginMeta FromJson(const nlohmann::json& json);
+  static PluginMeta FromJson(const rapidjson::Value& json);
 };
 
 struct JobMeta {
@@ -119,11 +129,12 @@ struct JobMeta {
    */
   std::string ToJson(bool print_log = true) const;
   static JobMeta FromJson(const std::string& json_str);
-  static JobMeta FromJson(const nlohmann::json& json_str);
+  static JobMeta FromJson(const rapidjson::Value& json_str);
 };
 
 ////////////////// CreateMetaRequest ///////////////////////
 struct CreateGraphMetaRequest {
+  std::string version;
   std::string name;
   std::string description;
   std::string schema;  // all in one string.
@@ -132,7 +143,7 @@ struct CreateGraphMetaRequest {
 
   std::vector<PluginMeta> plugin_metas;
 
-  static CreateGraphMetaRequest FromJson(const std::string& json_str);
+  static Result<CreateGraphMetaRequest> FromJson(const std::string& json_str);
 
   std::string ToString() const;
 };
@@ -163,7 +174,7 @@ struct CreatePluginMetaRequest {
 
   static CreatePluginMetaRequest FromJson(const std::string& json_str);
 
-  static CreatePluginMetaRequest FromJson(const nlohmann::json& json_obj);
+  static CreatePluginMetaRequest FromJson(const rapidjson::Value& json_obj);
 };
 
 ////////////////// UpdateMetaRequest ///////////////////////
@@ -244,7 +255,7 @@ struct GraphStatistics {
 
   std::string ToJson() const;
   static Result<GraphStatistics> FromJson(const std::string& json_str);
-  static Result<GraphStatistics> FromJson(const nlohmann::json& json);
+  static Result<GraphStatistics> FromJson(const rapidjson::Value& json);
 };
 
 /*

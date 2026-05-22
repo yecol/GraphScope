@@ -25,7 +25,7 @@ image:
   registry: registry.cn-hongkong.aliyuncs.com
   repository: graphscope/graphscope-store
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "0.28.0"
+  tag: "0.30.0"
   digest: ""
   ## Specify a imagePullPolicy
   ## Defaults to 'Always' if image tag is 'latest', else set to 'IfNotPresent'
@@ -73,6 +73,9 @@ store:
     ##
     size: 1Gi
     selector: {}
+
+  service:
+    adminPort: 10001
 
   ## @param hostAliases pods host aliases
   ## https://kubernetes.io/docs/concepts/services-networking/add-entries-to-pod-etc-hosts-with-host-aliases/
@@ -136,6 +139,10 @@ frontend:
     servicePort: 55556
 
     gremlinPort: 12312
+
+    cypherPort: 7687
+
+    httpPort: 8080
 
     ## Internal port for communication between components.
     ##
@@ -259,7 +266,7 @@ portal:
   coordinatorImage:
     registry: registry.cn-hongkong.aliyuncs.com
     repository: graphscope/coordinator
-    tag: "0.28.0"
+    tag: "0.30.0"
   ## Service parameters
   ##
   service:
@@ -295,6 +302,9 @@ portal:
   ## Request for data loading
   ##
   studioWrapperEndpoint: ""
+  ##
+  ## baseId is the id used for creating odps dataloading job
+  baseId: ""
   ## @param hostIPC Specify if host IPC should be enabled for pods
   ##
   hostIPC: false
@@ -528,7 +538,7 @@ discoveryMode: "file"
 
 ## Coordinator Config
 snapshotIncreaseIntervalMs: 1000
-offsetsPersistIntervalMs: 3000
+offsetsPersistIntervalMs: 1000
 fileMetaStorePath: "/etc/groot/my.meta"
 logRecycleEnable: true
 logRecycleOffsetReserve: 86400
@@ -538,9 +548,10 @@ storeDataPath: "/var/lib/graphscope-store"
 storeDataDownloadPath: "/var/lib/graphscope-store/download"
 storeDataSecondaryPath: "/home/graphscope/secondary"
 storeWriteThreadCount: 1
-storeQueueBufferSize: "1024000"
+storeQueueBufferSize: "102400"
 
 storeGcIntervalMs: 5000
+storeCatchupIntervalMs: 5000
 
 ## Kafka Config
 ##
@@ -594,6 +605,27 @@ queryExecutionTimeoutMs: 600000
 graphPlannerJoinMinPatternSize: 5
 graphPlannerCboGlogueSize: 3
 
+## Log Persistence parameters
+##
+logPersistence:
+  ## Enable persistence using Persistent Volume Claims. If false, use emptyDir
+  enabled: false
+  ## Existing PVC to hold the log data. If not provided, a new PVC will be created.
+  existingClaim: ""
+  ## Persistent Volume storage class
+  storageClass: ""
+  ## Persistent Volume access modes
+  accessModes:
+  - ReadWriteOnce
+  ## Persistent Volume size
+  size: 1Gi
+  ## Persistent Volume annotations
+  annotations: {}
+  ## Persistent Volume labels
+  selector: {}
+  ## mountPath for the Persistent Volume
+  mountPath: "/var/log/graphscope"
+
 ## Key-value pair separated by ;
 ## For example extraConfig="k1=v1;k2=v2"
 extraConfig: ""
@@ -639,4 +671,9 @@ uptrace:
 distributed:
   enabled: false
 
-collectStatistics: false
+collect:
+  statistics:
+    enabled: false
+    initial:
+      delay: 5
+    interval: 60

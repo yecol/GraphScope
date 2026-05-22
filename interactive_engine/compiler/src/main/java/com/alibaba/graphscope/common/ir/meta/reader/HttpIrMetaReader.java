@@ -24,10 +24,7 @@ import com.alibaba.graphscope.common.ir.meta.GraphId;
 import com.alibaba.graphscope.common.ir.meta.IrMeta;
 import com.alibaba.graphscope.common.ir.meta.SnapshotId;
 import com.alibaba.graphscope.common.ir.meta.procedure.GraphStoredProcedures;
-import com.alibaba.graphscope.common.ir.meta.schema.FileFormatType;
-import com.alibaba.graphscope.common.ir.meta.schema.IrGraphSchema;
-import com.alibaba.graphscope.common.ir.meta.schema.IrGraphStatistics;
-import com.alibaba.graphscope.common.ir.meta.schema.SchemaInputStream;
+import com.alibaba.graphscope.common.ir.meta.schema.*;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Preconditions;
@@ -60,7 +57,9 @@ public class HttpIrMetaReader implements IrMetaReader {
     public IrMeta readMeta() throws IOException {
         try {
             HttpResponse<String> response =
-                    sendRequest(GraphConfig.GRAPH_META_SCHEMA_URI.get(configs));
+                    sendRequest(
+                            GraphConfig.GRAPH_META_SCHEMA_URI.get(configs),
+                            GraphConfig.GRAPH_META_FETCH_TIMEOUT_MS.get(configs));
             String res = response.body();
             Preconditions.checkArgument(
                     response.statusCode() == 200,
@@ -73,10 +72,11 @@ public class HttpIrMetaReader implements IrMetaReader {
                     metaPair.getValue0(),
                     SnapshotId.createEmpty(), // todo: return snapshot id from http service
                     new IrGraphSchema(
+                            configs,
                             new SchemaInputStream(
                                     new ByteArrayInputStream(
                                             metaInYaml.getBytes(StandardCharsets.UTF_8)),
-                                    FileFormatType.YAML)),
+                                    SchemaSpec.Type.FLEX_IN_YAML)),
                     new GraphStoredProcedures(
                             new ByteArrayInputStream(metaInYaml.getBytes(StandardCharsets.UTF_8)),
                             this));
@@ -94,7 +94,8 @@ public class HttpIrMetaReader implements IrMetaReader {
                     sendRequest(
                             String.format(
                                     GraphConfig.GRAPH_META_STATISTICS_URI.get(configs),
-                                    graphId.getId()));
+                                    graphId.getId()),
+                            GraphConfig.GRAPH_META_FETCH_TIMEOUT_MS.get(configs));
             String res = response.body();
             Preconditions.checkArgument(
                     response.statusCode() == 200,
@@ -112,7 +113,9 @@ public class HttpIrMetaReader implements IrMetaReader {
     public boolean syncStatsEnabled(GraphId graphId) throws IOException {
         try {
             HttpResponse<String> response =
-                    sendRequest(GraphConfig.GRAPH_META_SCHEMA_URI.get(configs));
+                    sendRequest(
+                            GraphConfig.GRAPH_META_SCHEMA_URI.get(configs),
+                            GraphConfig.GRAPH_META_FETCH_TIMEOUT_MS.get(configs));
             String res = response.body();
             Preconditions.checkArgument(
                     response.statusCode() == 200,
@@ -125,13 +128,14 @@ public class HttpIrMetaReader implements IrMetaReader {
         }
     }
 
-    private HttpResponse<String> sendRequest(String requestUri)
+    private HttpResponse<String> sendRequest(String requestUri, long timeOut)
             throws IOException, InterruptedException {
         HttpRequest request =
                 HttpRequest.newBuilder()
                         .uri(URI.create(requestUri))
                         .headers(CONTENT_TYPE, APPLICATION_JSON)
                         .GET()
+                        .timeout(java.time.Duration.ofMillis(timeOut))
                         .build();
         return httpClient.send(request, HttpResponse.BodyHandlers.ofString());
     }
@@ -140,10 +144,18 @@ public class HttpIrMetaReader implements IrMetaReader {
         ObjectMapper mapper = new ObjectMapper();
         JsonNode rootNode = mapper.readTree(metaInJson);
         Map<String, Object> rootMap = mapper.convertValue(rootNode, Map.class);
-        Map metaMap = (Map) rootMap.get("graph");
-        GraphId graphId = new GraphId(metaMap.get("id"));
-        Yaml yaml = new Yaml();
-        return Pair.with(graphId, yaml.dump(metaMap));
+        if (rootMap.containsKey("graph")) {
+            // Parse the response if in the 'graph' field of the response
+            Map metaMap = (Map) rootMap.get("graph");
+            GraphId graphId = new GraphId(metaMap.get("id"));
+            Yaml yaml = new Yaml();
+            return Pair.with(graphId, yaml.dump(metaMap));
+        } else {
+            // Parser the response if the response is the root
+            GraphId graphId = new GraphId(rootMap.get("id"));
+            Yaml yaml = new Yaml();
+            return Pair.with(graphId, yaml.dump(rootMap));
+        }
     }
 
     private boolean getStaticEnabled(String metaInJson) throws IOException {

@@ -19,114 +19,139 @@ package com.alibaba.graphscope.common.ir.planner;
 import com.alibaba.graphscope.common.config.Configs;
 import com.alibaba.graphscope.common.config.PlannerConfig;
 import com.alibaba.graphscope.common.ir.meta.IrMeta;
+import com.alibaba.graphscope.common.ir.meta.IrMetaStats;
+import com.alibaba.graphscope.common.ir.meta.IrMetaTracker;
 import com.alibaba.graphscope.common.ir.meta.glogue.calcite.GraphRelMetadataQuery;
 import com.alibaba.graphscope.common.ir.meta.glogue.calcite.handler.GraphMetadataHandlerProvider;
-import com.alibaba.graphscope.common.ir.planner.rules.*;
-import com.alibaba.graphscope.common.ir.planner.volcano.VolcanoPlannerX;
+import com.alibaba.graphscope.common.ir.meta.schema.CommonOptTable;
+import com.alibaba.graphscope.common.ir.rel.CommonTableScan;
 import com.alibaba.graphscope.common.ir.rel.GraphShuttle;
 import com.alibaba.graphscope.common.ir.rel.graph.GraphLogicalSource;
 import com.alibaba.graphscope.common.ir.rel.graph.match.AbstractLogicalMatch;
 import com.alibaba.graphscope.common.ir.rel.graph.match.GraphLogicalMultiMatch;
 import com.alibaba.graphscope.common.ir.rel.graph.match.GraphLogicalSingleMatch;
+import com.alibaba.graphscope.common.ir.rel.metadata.glogue.Glogue;
 import com.alibaba.graphscope.common.ir.rel.metadata.glogue.GlogueQuery;
+import com.alibaba.graphscope.common.ir.rel.metadata.schema.GlogueSchema;
 import com.alibaba.graphscope.common.ir.tools.GraphBuilderFactory;
 import com.alibaba.graphscope.common.ir.tools.config.GraphOpt;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
 
-import org.apache.calcite.plan.ConventionTraitDef;
 import org.apache.calcite.plan.GraphOptCluster;
 import org.apache.calcite.plan.RelOptPlanner;
-import org.apache.calcite.plan.RelRule;
-import org.apache.calcite.plan.hep.HepPlanner;
-import org.apache.calcite.plan.hep.HepProgram;
-import org.apache.calcite.plan.hep.HepProgramBuilder;
-import org.apache.calcite.plan.volcano.VolcanoPlanner;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelVisitor;
 import org.apache.calcite.rel.core.Filter;
 import org.apache.calcite.rel.core.JoinRelType;
 import org.apache.calcite.rel.logical.LogicalJoin;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
-import org.apache.calcite.rel.rules.CoreRules;
-import org.apache.calcite.rel.rules.FilterJoinRule;
 import org.apache.calcite.tools.RelBuilderFactory;
 import org.checkerframework.checker.nullness.qual.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.io.Closeable;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Optimize graph relational tree which consists of match and other relational operators
  */
-public class GraphRelOptimizer {
+public class GraphRelOptimizer implements Closeable, IrMetaTracker {
+    private static final Logger logger = LoggerFactory.getLogger(GraphRelOptimizer.class);
     private final PlannerConfig config;
-    private final RelOptPlanner relPlanner;
-    private final RelOptPlanner matchPlanner;
-    private final RelOptPlanner physicalPlanner;
     private final RelBuilderFactory relBuilderFactory;
-    private final GlogueHolder glogueHolder;
+    private final PlannerGroupManager plannerGroupManager;
 
-    public GraphRelOptimizer(Configs graphConfig) {
-        this.config = new PlannerConfig(graphConfig);
-        this.relBuilderFactory = new GraphBuilderFactory(graphConfig);
-        this.relPlanner = createRelPlanner();
-        this.matchPlanner = createMatchPlanner();
-        this.physicalPlanner = createPhysicalPlanner();
-        this.glogueHolder = new GlogueHolder(graphConfig);
+    private final AtomicReference<GlogueQuery> glogueRef;
+
+    public GraphRelOptimizer(Configs graphConfig, Class<? extends PlannerGroupManager> instance) {
+        try {
+            this.config = new PlannerConfig(graphConfig);
+            this.relBuilderFactory = new GraphBuilderFactory(graphConfig);
+            this.plannerGroupManager =
+                    instance.getDeclaredConstructor(PlannerConfig.class, RelBuilderFactory.class)
+                            .newInstance(this.config, this.relBuilderFactory);
+            this.glogueRef = new AtomicReference<>();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
-    public GlogueHolder getGlogueHolder() {
-        return glogueHolder;
+    public GraphRelOptimizer(Configs graphConfig) {
+        this(graphConfig, PlannerGroupManager.Dynamic.class);
     }
 
     public RelOptPlanner getMatchPlanner() {
-        return matchPlanner;
+        PlannerGroup currentGroup = this.plannerGroupManager.getCurrentGroup();
+        return currentGroup.getMatchPlanner();
     }
 
-    public RelOptPlanner getPhysicalPlanner() {
-        return physicalPlanner;
-    }
-
-    public RelOptPlanner getRelPlanner() {
-        return relPlanner;
+    public RelNode optimize(RelNode before, GraphIOProcessor ioProcessor) {
+        PlannerGroup currentGroup = this.plannerGroupManager.getCurrentGroup();
+        return currentGroup.optimize(before, ioProcessor);
     }
 
     public @Nullable RelMetadataQuery createMetaDataQuery(IrMeta irMeta) {
         if (config.isOn() && config.getOpt() == PlannerConfig.Opt.CBO) {
-            GlogueQuery gq = this.glogueHolder.getGlogue();
+            GlogueQuery gq = this.glogueRef.get();
             Preconditions.checkArgument(gq != null, "glogue is not ready");
             return new GraphRelMetadataQuery(
-                    new GraphMetadataHandlerProvider(this.matchPlanner, gq, this.config));
+                    new GraphMetadataHandlerProvider(getMatchPlanner(), gq, this.config));
         }
         return null;
     }
 
-    public RelNode optimize(RelNode before, GraphIOProcessor ioProcessor) {
-        if (config.isOn()) {
-            // apply rules of 'FilterPushDown' before the match optimization
-            relPlanner.setRoot(before);
-            RelNode relOptimized = relPlanner.findBestExp();
-            if (config.getOpt() == PlannerConfig.Opt.CBO) {
-                relOptimized = relOptimized.accept(new MatchOptimizer(ioProcessor));
-            }
-            // apply rules of 'FieldTrim' after the match optimization
-            if (config.getRules().contains(FieldTrimRule.class.getSimpleName())) {
-                relOptimized = FieldTrimRule.trim(ioProcessor.getBuilder(), relOptimized);
-            }
-            physicalPlanner.setRoot(relOptimized);
-            RelNode physicalOptimized = physicalPlanner.findBestExp();
-            return physicalOptimized;
+    @Override
+    public void close() {
+        if (this.plannerGroupManager != null) {
+            this.plannerGroupManager.close();
         }
-        return before;
     }
 
-    private class MatchOptimizer extends GraphShuttle {
-        private final GraphIOProcessor ioProcessor;
+    @Override
+    public void onSchemaChanged(IrMeta meta) {
+        if (this.plannerGroupManager != null) {
+            this.plannerGroupManager.clean();
+        }
+    }
 
-        public MatchOptimizer(GraphIOProcessor ioProcessor) {
+    @Override
+    public void onStatsChanged(IrMetaStats stats) {
+        GlogueSchema g = GlogueSchema.fromMeta(stats);
+        Glogue gl = new Glogue(g, config.getGlogueSize());
+        GlogueQuery gq = new GlogueQuery(gl);
+        this.glogueRef.compareAndSet(glogueRef.get(), gq);
+    }
+
+    public static class MatchOptimizer extends GraphShuttle {
+        private final GraphIOProcessor ioProcessor;
+        private final RelOptPlanner matchPlanner;
+        // record the common rel(s) which has been optimized
+        private final Map<String, RelNode> commonTableToOpt;
+
+        public MatchOptimizer(GraphIOProcessor ioProcessor, RelOptPlanner matchPlanner) {
             this.ioProcessor = ioProcessor;
+            this.matchPlanner = matchPlanner;
+            this.commonTableToOpt = Maps.newHashMap();
+        }
+
+        @Override
+        public RelNode visit(CommonTableScan tableScan) {
+            CommonOptTable optTable = (CommonOptTable) tableScan.getTable();
+            String tableName = optTable.getQualifiedName().get(0);
+            RelNode commonOpt = commonTableToOpt.get(tableName);
+            if (commonOpt == null) {
+                commonOpt = optTable.getCommon().accept(this);
+                commonTableToOpt.put(tableName, commonOpt);
+            }
+            return new CommonTableScan(
+                    tableScan.getCluster(), tableScan.getTraitSet(), new CommonOptTable(commonOpt));
         }
 
         @Override
@@ -217,86 +242,5 @@ public class GraphRelOptimizer {
             visitor.go(join);
             return decomposable.get();
         }
-    }
-
-    private RelOptPlanner createRelPlanner() {
-        HepProgramBuilder hepBuilder = HepProgram.builder();
-        if (config.isOn()) {
-            List<RelRule.Config> ruleConfigs = Lists.newArrayList();
-            config.getRules()
-                    .forEach(
-                            k -> {
-                                if (k.equals(
-                                        FilterJoinRule.FilterIntoJoinRule.class.getSimpleName())) {
-                                    ruleConfigs.add(CoreRules.FILTER_INTO_JOIN.config);
-                                } else if (k.equals(FilterMatchRule.class.getSimpleName())) {
-                                    ruleConfigs.add(FilterMatchRule.Config.DEFAULT);
-                                }
-                            });
-            ruleConfigs.forEach(
-                    k -> {
-                        hepBuilder.addRuleInstance(
-                                k.withRelBuilderFactory(relBuilderFactory).toRule());
-                    });
-        }
-        return new HepPlanner(hepBuilder.build());
-    }
-
-    private RelOptPlanner createMatchPlanner() {
-        if (config.isOn() && config.getOpt() == PlannerConfig.Opt.CBO) {
-            VolcanoPlanner planner = new VolcanoPlannerX();
-            planner.addRelTraitDef(ConventionTraitDef.INSTANCE);
-            planner.setTopDownOpt(true);
-            planner.setNoneConventionHasInfiniteCost(false);
-            config.getRules()
-                    .forEach(
-                            k -> {
-                                RelRule.Config ruleConfig = null;
-                                if (k.equals(ExtendIntersectRule.class.getSimpleName())) {
-                                    ruleConfig =
-                                            ExtendIntersectRule.Config.DEFAULT
-                                                    .withMaxPatternSizeInGlogue(
-                                                            config.getGlogueSize());
-                                } else if (k.equals(JoinDecompositionRule.class.getSimpleName())) {
-                                    ruleConfig =
-                                            JoinDecompositionRule.Config.DEFAULT.withMinPatternSize(
-                                                    config.getJoinMinPatternSize());
-                                }
-                                if (ruleConfig != null) {
-                                    planner.addRule(
-                                            ruleConfig
-                                                    .withRelBuilderFactory(relBuilderFactory)
-                                                    .toRule());
-                                }
-                            });
-            return planner;
-        }
-        // todo: re-implement heuristic rules in ir core match
-        return new HepPlanner(HepProgram.builder().build());
-    }
-
-    private RelOptPlanner createPhysicalPlanner() {
-        HepProgramBuilder hepBuilder = HepProgram.builder();
-        if (config.isOn()) {
-            List<RelRule.Config> ruleConfigs = Lists.newArrayList();
-            config.getRules()
-                    .forEach(
-                            k -> {
-                                if (k.equals(ExpandGetVFusionRule.class.getSimpleName())) {
-                                    ruleConfigs.add(
-                                            ExpandGetVFusionRule.BasicExpandGetVFusionRule.Config
-                                                    .DEFAULT);
-                                    ruleConfigs.add(
-                                            ExpandGetVFusionRule.PathBaseExpandGetVFusionRule.Config
-                                                    .DEFAULT);
-                                }
-                            });
-            ruleConfigs.forEach(
-                    k -> {
-                        hepBuilder.addRuleInstance(
-                                k.withRelBuilderFactory(relBuilderFactory).toRule());
-                    });
-        }
-        return new GraphHepPlanner(hepBuilder.build());
     }
 }

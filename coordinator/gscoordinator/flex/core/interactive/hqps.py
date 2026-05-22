@@ -28,10 +28,12 @@ from typing import Union
 import gs_interactive
 import psutil
 import requests
+from graphscope.config import Config
 from gs_interactive.models.create_graph_request import CreateGraphRequest
 from gs_interactive.models.create_procedure_request import CreateProcedureRequest
 from gs_interactive.models.schema_mapping import SchemaMapping
 from gs_interactive.models.start_service_request import StartServiceRequest
+from gs_interactive.models.stop_service_request import StopServiceRequest
 from gs_interactive.models.update_procedure_request import UpdateProcedureRequest
 
 from gscoordinator.flex.core.config import CLUSTER_TYPE
@@ -48,9 +50,15 @@ logger = logging.getLogger("graphscope")
 class HQPSClient(object):
     """Class used to interact with hqps engine"""
 
-    def __init__(self):
+    def __init__(self, config: Config):
         # hqps admin service endpoint
         self._hqps_endpoint = self._get_hqps_service_endpoints()
+        self._port_mapping = config.interactive.port_mapping
+        
+    def _get_mapped_port(self, port: int) -> int:
+        if self._port_mapping and port in self._port_mapping:
+            return self._port_mapping[port]
+        return port
 
     def _get_hqps_service_endpoints(self):
         if CLUSTER_TYPE == "HOSTS":
@@ -228,7 +236,7 @@ class HQPSClient(object):
             api_instance = gs_interactive.AdminServiceServiceManagementApi(api_client)
             response = api_instance.get_service_status()
             if CLUSTER_TYPE == "HOSTS":
-                host = get_internal_ip()
+                host = '127.0.0.1' # for interactive deployed in hosts, we could not determine the public ip in container. So we let user to replace with the public ip.
                 if response.status == "Running" and response.graph is not None:
                     g = response.graph.to_dict()
                     serving_graph_id = g["id"]
@@ -238,10 +246,11 @@ class HQPSClient(object):
                     status = {
                         "status": response.status,
                         "sdk_endpoints": {
-                            "cypher": f"neo4j://{host}:{response.bolt_port} (internal)",
-                            "hqps": f"http://{host}:{response.hqps_port} (internal)",
-                            "gremlin": f"ws://{host}:{response.gremlin_port}/gremlin (internal)",
+                            "cypher": f"neo4j://{host}:{self._get_mapped_port(response.bolt_port)}",
+                            "hqps": f"http://{host}:{self._get_mapped_port(response.hqps_port)}",
+                            "gremlin": f"ws://{host}:{self._get_mapped_port(response.gremlin_port)}/gremlin",
                         },
+                        "info": "Replace 127.0.0.1 with public ip if connecting from outside",
                         "start_time": service_start_time,
                         "graph_id": g["id"],
                     }
@@ -263,7 +272,7 @@ class HQPSClient(object):
             gs_interactive.Configuration(self._hqps_endpoint)
         ) as api_client:
             api_instance = gs_interactive.AdminServiceServiceManagementApi(api_client)
-            return api_instance.stop_service()
+            return api_instance.stop_service(StopServiceRequest())
 
     def restart_service(self) -> str:
         with gs_interactive.ApiClient(
@@ -371,5 +380,5 @@ class HQPSClient(object):
         raise RuntimeError("Method is not supported.")
 
 
-def init_hqps_client():
-    return HQPSClient()
+def init_hqps_client(config: Config):
+    return HQPSClient(config)

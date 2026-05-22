@@ -79,4 +79,15 @@ public class CommonConfig {
 
     public static final Config<Boolean> COLLECT_STATISTICS =
             Config.boolConfig("collect.statistics", false);
+    public static final Config<Integer> COLLECT_STATISTICS_INITIAL_DELAY_MIN =
+            Config.intConfig("collect.statistics.initial.delay.min", 5);
+
+    public static final Config<Integer> COLLECT_STATISTICS_INTERVAL_MIN =
+            Config.intConfig("collect.statistics.interval.min", 60);
+
+    public static final Config<String> SERVERS_DISCOVERY_MODE =
+            Config.stringConfig("servers.discovery.mode", "service");
+
+    public static final Config<Integer> FILE_DISCOVERY_INTERVAL_MS =
+            Config.intConfig("file.discovery.interval.ms", 60000);
 }

@@ -16,10 +16,14 @@
 
 package com.alibaba.graphscope.common.ir.meta.schema;
 
+import com.alibaba.graphscope.common.config.Configs;
+import com.alibaba.graphscope.common.ir.type.GraphTypeFactoryImpl;
 import com.alibaba.graphscope.groot.common.exception.PropertyNotFoundException;
 import com.alibaba.graphscope.groot.common.exception.TypeNotFoundException;
 import com.alibaba.graphscope.groot.common.schema.api.*;
-import com.alibaba.graphscope.groot.common.util.IrSchemaParser;
+import com.google.common.collect.ImmutableMap;
+
+import org.apache.calcite.rel.type.RelDataTypeFactory;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -27,44 +31,41 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Maintain Graph schema meta for IR and add two extra interfaces : {@link #schemaJson()} and {@link #isColumnId()}
+ * Maintain Graph schema meta for IR and add two extra interfaces : {@link #getSchemaSpec(SchemaSpec.Type)} ()} and {@link #isColumnId()}
  */
 public class IrGraphSchema implements GraphSchema {
     private final GraphSchema graphSchema;
-    private final String schemeJson;
     private final boolean isColumnId;
+    private final SchemaSpecManager specManager;
 
-    public IrGraphSchema(SchemaInputStream schemaInputStream) throws IOException {
+    public IrGraphSchema(Configs configs, SchemaInputStream schemaInputStream) throws IOException {
         this.isColumnId = false;
         String content =
                 new String(
                         schemaInputStream.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         schemaInputStream.getInputStream().close();
-        switch (schemaInputStream.getFormatType()) {
-            case YAML:
-                this.graphSchema = Utils.buildSchemaFromYaml(content);
-                this.schemeJson =
-                        IrSchemaParser.getInstance().parse(this.graphSchema, this.isColumnId);
-                break;
-            case JSON:
-            default:
-                this.graphSchema = Utils.buildSchemaFromJson(content);
-                this.schemeJson = content;
-        }
+        SchemaSpec spec = new SchemaSpec(schemaInputStream.getType(), content);
+        RelDataTypeFactory typeFactory = new GraphTypeFactoryImpl(configs);
+        this.graphSchema = spec.convert(typeFactory);
+        this.specManager = new SchemaSpecManager(this.graphSchema, false, typeFactory, spec);
     }
 
     public IrGraphSchema(GraphSchema graphSchema, boolean isColumnId) {
         this.graphSchema = graphSchema;
-        this.schemeJson = IrSchemaParser.getInstance().parse(graphSchema, isColumnId);
         this.isColumnId = isColumnId;
+        this.specManager =
+                new SchemaSpecManager(
+                        this.graphSchema,
+                        this.isColumnId,
+                        new GraphTypeFactoryImpl(new Configs(ImmutableMap.of())));
     }
 
     public boolean isColumnId() {
         return this.isColumnId;
     }
 
-    public String schemaJson() {
-        return this.schemeJson;
+    public String getSchemaSpec(SchemaSpec.Type type) {
+        return this.specManager.getSpec(type).getContent();
     }
 
     @Override
@@ -110,5 +111,9 @@ public class IrGraphSchema implements GraphSchema {
     @Override
     public String getVersion() {
         return this.graphSchema.getVersion();
+    }
+
+    protected GraphSchema getGraphSchema() {
+        return this.graphSchema;
     }
 }

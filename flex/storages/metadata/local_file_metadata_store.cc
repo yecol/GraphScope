@@ -40,7 +40,7 @@ Result<LocalFileMetadataStore::meta_key_t> LocalFileMetadataStore::CreateMeta(
   ASSIGN_AND_RETURN_IF_RESULT_NOT_OK(meta_key, get_next_meta_key(meta_kind));
   VLOG(10) << "got next meta key: " << meta_key;
   if (is_key_exist(meta_kind, meta_key)) {
-    return Status(StatusCode::InternalError,
+    return Status(StatusCode::INTERNAL_ERROR,
                   "When creating meta, got an existing key");
   }
   auto meta_file = get_meta_file(meta_kind, meta_key);
@@ -58,7 +58,7 @@ Result<LocalFileMetadataStore::meta_key_t> LocalFileMetadataStore::CreateMeta(
   if (is_key_exist(meta_kind, meta_key)) {
     LOG(ERROR) << "Can not insert meta, key already exists: " << meta_kind
                << ", meta_key: " << meta_key;
-    return Status(StatusCode::InternalError,
+    return Status(StatusCode::INTERNAL_ERROR,
                   "key " + meta_key + " already exits for meta: " + meta_kind);
   }
   auto meta_file = get_meta_file(meta_kind, meta_key);
@@ -73,7 +73,7 @@ Result<LocalFileMetadataStore::meta_value_t> LocalFileMetadataStore::GetMeta(
     const meta_key_t& meta_kind, const meta_key_t& meta_key) {
   std::unique_lock<std::mutex> lock(meta_mutex_);
   if (!is_key_exist(meta_kind, meta_key)) {
-    return Status(StatusCode::NotFound,
+    return Status(StatusCode::NOT_FOUND,
                   "key " + meta_key + " not found for :" + meta_kind);
   }
   auto meta_file = get_meta_file(meta_kind, meta_key);
@@ -118,12 +118,12 @@ Result<bool> LocalFileMetadataStore::DeleteMeta(const meta_kind_t& meta_kind,
                                                 const meta_key_t& meta_key) {
   std::unique_lock<std::mutex> lock(meta_mutex_);
   if (!is_key_exist(meta_kind, meta_key)) {
-    return Status(StatusCode::NotFound,
+    return Status(StatusCode::NOT_FOUND,
                   "key " + meta_key + " not found for :" + meta_kind);
   }
   auto meta_file = get_meta_file(meta_kind, meta_key);
   if (!std::filesystem::remove(meta_file)) {
-    return Status(StatusCode::IOError, "Failed to delete meta");
+    return Status(StatusCode::IO_ERROR, "Failed to delete meta");
   }
   return true;
 }
@@ -133,7 +133,7 @@ Result<bool> LocalFileMetadataStore::DeleteAllMeta(
   std::unique_lock<std::mutex> lock(meta_mutex_);
   auto meta_dir = get_meta_kind_dir(meta_kind);
   if (!std::filesystem::remove_all(meta_dir)) {
-    return Status(StatusCode::IOError, "Failed to delete meta");
+    return Status(StatusCode::IO_ERROR, "Failed to delete meta");
   }
   VLOG(10) << "Remove all meta for " << meta_kind;
   return true;
@@ -144,7 +144,7 @@ Result<bool> LocalFileMetadataStore::UpdateMeta(
     const meta_value_t& meta_value) {
   std::unique_lock<std::mutex> lock(meta_mutex_);
   if (!is_key_exist(meta_kind, meta_key)) {
-    return Status(StatusCode::NotFound,
+    return Status(StatusCode::NOT_FOUND,
                   "key " + meta_key + " not found for :" + meta_kind);
   }
   auto meta_file = get_meta_file(meta_kind, meta_key);
@@ -160,7 +160,7 @@ Result<bool> LocalFileMetadataStore::UpdateMeta(const meta_kind_t& meta_kind,
                                                 update_func_t update_func) {
   std::unique_lock<std::mutex> lock(meta_mutex_);
   if (!is_key_exist(meta_kind, meta_key)) {
-    return Status(StatusCode::NotFound,
+    return Status(StatusCode::NOT_FOUND,
                   "key " + meta_key + " not found for :" + meta_kind);
   }
   auto meta_file = get_meta_file(meta_kind, meta_key);
@@ -181,8 +181,8 @@ Result<bool> LocalFileMetadataStore::UpdateMeta(const meta_kind_t& meta_kind,
 
 Result<LocalFileMetadataStore::meta_key_t>
 LocalFileMetadataStore::get_next_meta_key(
-    const LocalFileMetadataStore::meta_kind_t& meta_kind) const {
-  return std::to_string(get_max_id(meta_kind) + 1);
+    const LocalFileMetadataStore::meta_kind_t& meta_kind) {
+  return std::to_string(increase_and_get_id(meta_kind));
 }
 
 std::string LocalFileMetadataStore::get_root_meta_dir() const {
@@ -208,29 +208,38 @@ std::string LocalFileMetadataStore::get_meta_file(const meta_kind_t& meta_kind,
   return ret;
 }
 
-int32_t LocalFileMetadataStore::get_max_id(const meta_kind_t& meta_kind) const {
-  // iterate all files in the directory, get the max id.
-  int max_id_ = 0;
+// Guarded by meta_mutex_ outside.
+int32_t LocalFileMetadataStore::increase_and_get_id(
+    const meta_kind_t& meta_kind) {
   auto dir = get_meta_kind_dir(meta_kind);
-  for (auto& p : std::filesystem::directory_iterator(dir)) {
-    if (std::filesystem::is_directory(p)) {
-      continue;
+  int max_id_ = 0;
+  // In the directory, we expect a file with name CUR_ID_FILE_NAME.
+  // If the file does not exist, we will create one with content "0".
+  auto cur_id_file = dir + "/" + CUR_ID_FILE_NAME;
+  if (!std::filesystem::exists(cur_id_file)) {
+    std::ofstream out_file(cur_id_file);
+    if (!out_file.is_open()) {
+      LOG(ERROR) << "Failed to create file: " << cur_id_file;
+      return -1;
     }
-    auto file_name = p.path().filename().string();
-    if (file_name.find(META_FILE_PREFIX) != std::string::npos) {
-      auto id_str = file_name.substr(strlen(META_FILE_PREFIX));
-      int32_t id;
-      try {
-        id = std::stoi(id_str);
-      } catch (std::invalid_argument& e) {
-        LOG(ERROR) << "Invalid id: " << id_str;
-        continue;
-      }
-      if (id > max_id_) {
-        max_id_ = id;
-      }
-    }
+    out_file << "0";
+    out_file.close();
   }
+  std::ifstream in_file(cur_id_file);
+  if (!in_file.is_open()) {
+    LOG(ERROR) << "Failed to open file: " << cur_id_file;
+    return -1;
+  }
+  in_file >> max_id_;
+  in_file.close();
+  max_id_++;
+  std::ofstream out_file(cur_id_file);
+  if (!out_file.is_open()) {
+    LOG(ERROR) << "Failed to open file: " << cur_id_file;
+    return -1;
+  }
+  out_file << max_id_;
+  out_file.close();
   return max_id_;
 }
 
@@ -245,7 +254,7 @@ Result<bool> LocalFileMetadataStore::dump_file(
     const std::string& file_path, const std::string& content) const {
   std::ofstream out_file(file_path);
   if (!out_file.is_open()) {
-    return Result<bool>(gs::StatusCode::IOError, false);
+    return Result<bool>(gs::StatusCode::IO_ERROR, false);
   }
   out_file << content;
   out_file.close();
@@ -256,8 +265,8 @@ Result<LocalFileMetadataStore::meta_value_t> LocalFileMetadataStore::read_file(
     const std::string& file_path) const {
   std::ifstream in_file(file_path);
   if (!in_file.is_open()) {
-    return Result<LocalFileMetadataStore::meta_value_t>(gs::StatusCode::IOError,
-                                                        "Failed to open file");
+    return Result<LocalFileMetadataStore::meta_value_t>(
+        gs::StatusCode::IO_ERROR, "Failed to open file");
   }
   std::string content((std::istreambuf_iterator<char>(in_file)),
                       std::istreambuf_iterator<char>());
@@ -269,7 +278,7 @@ Result<bool> LocalFileMetadataStore::create_directory(
     const std::string& dir) const {
   if (!std::filesystem::exists(dir)) {
     if (!std::filesystem::create_directory(dir)) {
-      return Result<bool>(gs::StatusCode::IOError,
+      return Result<bool>(gs::StatusCode::IO_ERROR,
                           "Failed to create directory");
     }
   }

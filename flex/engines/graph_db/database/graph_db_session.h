@@ -31,7 +31,7 @@
 namespace gs {
 
 class GraphDB;
-class WalWriter;
+class IWalWriter;
 
 class GraphDBSession {
  public:
@@ -40,6 +40,7 @@ class GraphDBSession {
     kCypherJson = 1,            // Json format for cypher query
     kCypherProtoAdhoc = 2,      // Protobuf format for adhoc query
     kCypherProtoProcedure = 3,  // Protobuf format for procedure query
+    kCypherString = 4,
   };
 
   static constexpr int32_t MAX_RETRY = 3;
@@ -48,7 +49,7 @@ class GraphDBSession {
   static constexpr const char* kCypherJsonStr = "\x01";
   static constexpr const char* kCypherProtoAdhocStr = "\x02";
   static constexpr const char* kCypherProtoProcedureStr = "\x03";
-  GraphDBSession(GraphDB& db, Allocator& alloc, WalWriter& logger,
+  GraphDBSession(GraphDB& db, Allocator& alloc, IWalWriter& logger,
                  const std::string& work_dir, int thread_id)
       : db_(db),
         alloc_(alloc),
@@ -105,6 +106,8 @@ class GraphDBSession {
 
   AppBase* GetApp(int idx);
 
+  AppBase* GetApp(const std::string& name);
+
  private:
   Result<std::pair<uint8_t, std::string_view>>
   parse_query_type_from_cypher_json(const std::string_view& input);
@@ -139,7 +142,7 @@ class GraphDBSession {
   inline Result<std::pair<uint8_t, std::string_view>> parse_query_type(
       const std::string& input) {
     const char* str_data = input.data();
-    VLOG(10) << "parse query type for " << input;
+    VLOG(10) << "parse query type for " << input << " size: " << input.size();
     char input_tag = input.back();
     VLOG(10) << "input tag: " << static_cast<int>(input_tag);
     size_t len = input.size();
@@ -154,28 +157,33 @@ class GraphDBSession {
       // second last byte,which is fixed to 255, and other bytes are a string
       // representing the path to generated dynamic lib.
       return std::make_pair((uint8_t) input[len - 2],
-                            std::string_view(str_data, len - 2));
+                            std::string_view(str_data, len - 1));
     } else if (input_tag == static_cast<uint8_t>(InputFormat::kCypherJson)) {
       // For cypherJson there is no query-id provided. The query name is
       // provided in the json string.
-      std::string_view str_view(input.data(), len - 1);
+      // We don't discard the last byte, since we need it to determine the input
+      // format when deserializing the input arguments in deserialize() function
+      std::string_view str_view(input.data(), len);
       return parse_query_type_from_cypher_json(str_view);
     } else if (input_tag ==
                static_cast<uint8_t>(InputFormat::kCypherProtoProcedure)) {
       // For cypher internal procedure, the query_name is
       // provided in the protobuf message.
-      std::string_view str_view(input.data(), len - 1);
+      // Same as cypherJson, we don't discard the last byte.
+      std::string_view str_view(input.data(), len);
       return parse_query_type_from_cypher_internal(str_view);
-
+    } else if (input_tag == static_cast<uint8_t>(InputFormat::kCypherString)) {
+      return std::make_pair((uint8_t) input[len - 2],
+                            std::string_view(str_data, len - 1));
     } else {
       return Result<std::pair<uint8_t, std::string_view>>(
-          gs::Status(StatusCode::InValidArgument,
+          gs::Status(StatusCode::INVALID_ARGUMENT,
                      "Invalid input tag: " + std::to_string(input_tag)));
     }
   }
   GraphDB& db_;
   Allocator& alloc_;
-  WalWriter& logger_;
+  IWalWriter& logger_;
   std::string work_dir_;
   int thread_id_;
 

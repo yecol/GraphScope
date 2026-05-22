@@ -23,6 +23,9 @@
 #include "flex/otel/otel.h"
 #include "flex/storages/rt_mutable_graph/loading_config.h"
 #include "flex/utils/service_utils.h"
+#ifdef BUILD_WITH_OSS
+#include "flex/utils/remote/oss_storage.h"
+#endif
 
 #include <yaml-cpp/yaml.h>
 #include <boost/program_options.hpp>
@@ -54,15 +57,6 @@ std::string parse_codegen_dir(const bpo::variables_map& vm) {
   return codegen_dir;
 }
 
-void blockSignal(int sig) {
-  sigset_t set;
-  sigemptyset(&set);
-  sigaddset(&set, sig);
-  if (pthread_sigmask(SIG_BLOCK, &set, NULL) != 0) {
-    perror("pthread_sigmask");
-  }
-}
-
 // When graph_schema is not specified, codegen proxy will use the running graph
 // schema in graph_db_service
 void init_codegen_proxy(const bpo::variables_map& vm,
@@ -84,59 +78,95 @@ void init_codegen_proxy(const bpo::variables_map& vm,
                                    graph_schema_file);
 }
 
-void openDefaultGraph(const std::string workspace, int32_t thread_num,
-                      const std::string& default_graph, uint32_t memory_level) {
-  if (!std::filesystem::exists(workspace)) {
-    LOG(ERROR) << "Workspace directory not exists: " << workspace;
-  }
-  auto data_dir_path =
-      workspace + "/" + server::WorkDirManipulator::DATA_DIR_NAME;
-  if (!std::filesystem::exists(data_dir_path)) {
-    LOG(ERROR) << "Data directory not exists: " << data_dir_path;
-    return;
-  }
-
-  // Get current executable path
-
-  server::WorkDirManipulator::SetWorkspace(workspace);
-
-  VLOG(1) << "Finish init workspace";
-
-  if (default_graph.empty()) {
-    LOG(FATAL) << "No Default graph is specified";
-    return;
+void config_log_level(int log_level, int verbose_level) {
+  if (getenv("GLOG_minloglevel") != nullptr) {
+    FLAGS_stderrthreshold = atoi(getenv("GLOG_minloglevel"));
+  } else {
+    if (log_level == 0) {
+      FLAGS_minloglevel = 0;
+    } else if (log_level == 1) {
+      FLAGS_minloglevel = 1;
+    } else if (log_level == 2) {
+      FLAGS_minloglevel = 2;
+    } else if (log_level == 3) {
+      FLAGS_minloglevel = 3;
+    } else {
+      LOG(ERROR) << "Unsupported log level: " << log_level;
+    }
   }
 
-  auto& db = gs::GraphDB::get();
-  auto schema_path =
-      server::WorkDirManipulator::GetGraphSchemaPath(default_graph);
-  auto schema_res = gs::Schema::LoadFromYaml(schema_path);
-  if (!schema_res.ok()) {
-    LOG(FATAL) << "Fail to load graph schema from yaml file: " << schema_path;
+  // If environment variable is set, we will use it
+  if (getenv("GLOG_v") != nullptr) {
+    FLAGS_v = atoi(getenv("GLOG_v"));
+  } else {
+    if (verbose_level >= 0) {
+      FLAGS_v = verbose_level;
+    } else {
+      LOG(ERROR) << "Unsupported verbose level: " << verbose_level;
+    }
   }
-  auto data_dir_res =
-      server::WorkDirManipulator::GetDataDirectory(default_graph);
-  if (!data_dir_res.ok()) {
-    LOG(FATAL) << "Fail to get data directory for default graph: "
-               << data_dir_res.status().error_message();
-  }
-  std::string data_dir = data_dir_res.value();
-  if (!std::filesystem::exists(data_dir)) {
-    LOG(FATAL) << "Data directory not exists: " << data_dir
-               << ", for graph: " << default_graph;
-  }
-  db.Close();
-  gs::GraphDBConfig config(schema_res.value(), data_dir, thread_num);
-  config.memory_level = memory_level;
-  if (config.memory_level >= 2) {
-    config.enable_auto_compaction = true;
-  }
-  if (!db.Open(config).ok()) {
-    LOG(FATAL) << "Fail to load graph from data directory: " << data_dir;
-  }
-  LOG(INFO) << "Successfully init graph db for default graph: "
-            << default_graph;
 }
+
+#ifdef BUILD_WITH_OSS
+
+Status unzip(const std::string& zip_file, const std::string& dest_dir) {
+  std::string cmd = "unzip -o " + zip_file + " -d " + dest_dir;
+  boost::process::child process(cmd);
+  process.wait();
+  if (process.exit_code() != 0) {
+    return Status(StatusCode::IO_ERROR,
+                  "Fail to unzip file: " + zip_file +
+                      ", error code: " + std::to_string(process.exit_code()));
+  }
+  return Status::OK();
+}
+
+std::string download_data_from_oss(const std::string& graph_name,
+                                   const std::string& remote_data_path,
+                                   const std::string& local_data_dir) {
+  if (std::filesystem::exists(local_data_dir)) {
+    LOG(INFO) << "Data directory exists";
+  } else {
+    LOG(INFO) << "Data directory not exists, create directory";
+    std::filesystem::create_directories(local_data_dir);
+  }
+  gs::OSSConf conf;
+  conf.load_conf_from_env();
+  gs::OSSRemoteStorageDownloader downloader(conf);
+  auto open_res = downloader.Open();
+  if (!open_res.ok()) {
+    LOG(FATAL) << "Fail to open oss client: " << open_res.error_message();
+  }
+
+  auto data_dir_zip_path = local_data_dir + "/data.zip";
+  // if data_path start with conf.bucket_name_, remove it
+  std::string data_path_no_bucket = remote_data_path;
+  if (data_path_no_bucket.find(conf.bucket_name_) == 0) {
+    data_path_no_bucket =
+        data_path_no_bucket.substr(conf.bucket_name_.size() + 1);
+  }
+  LOG(INFO) << "Download data from oss: " << data_path_no_bucket << " to "
+            << data_dir_zip_path;
+
+  auto download_res = downloader.Get(data_path_no_bucket, data_dir_zip_path);
+  if (!download_res.ok()) {
+    LOG(FATAL) << "Fail to download data from oss: "
+               << download_res.error_message();
+  }
+  if (std::filesystem::exists(data_dir_zip_path)) {
+    LOG(INFO) << "Data zip file exists, start to unzip";
+    auto unzip_res = gs::unzip(data_dir_zip_path, local_data_dir);
+    if (!unzip_res.ok()) {
+      LOG(FATAL) << "Fail to unzip data file: " << unzip_res.error_message();
+    }
+    // remove zip file
+    std::filesystem::remove(data_dir_zip_path);
+  } else {
+    LOG(FATAL) << "Data zip file not exists: " << data_dir_zip_path;
+  }
+  return local_data_dir;
+}
+#endif
 
 }  // namespace gs
 
@@ -192,6 +222,7 @@ int main(int argc, char** argv) {
   if (vm.count("workspace")) {
     workspace = vm["workspace"].as<std::string>();
   }
+  server::WorkDirManipulator::SetWorkspace(workspace);
 
   if (!vm.count("server-config")) {
     LOG(FATAL) << "server-config is needed";
@@ -206,6 +237,9 @@ int main(int argc, char** argv) {
   service_config.start_compiler = vm["start-compiler"].as<bool>();
   service_config.memory_level = vm["memory-level"].as<unsigned>();
   service_config.enable_adhoc_handler = vm["enable-adhoc-handler"].as<bool>();
+
+  // Config log level
+  gs::config_log_level(service_config.log_level, service_config.verbose_level);
 
   auto& db = gs::GraphDB::get();
 
@@ -228,9 +262,6 @@ int main(int argc, char** argv) {
                     "data-path should NOT be specified";
     }
 
-    gs::openDefaultGraph(workspace, service_config.shard_num,
-                         service_config.default_graph,
-                         service_config.memory_level);
     // Suppose the default_graph is already loaded.
     LOG(INFO) << "Finish init workspace";
     auto schema_file = server::WorkDirManipulator::GetGraphSchemaPath(
@@ -248,16 +279,30 @@ int main(int argc, char** argv) {
       return -1;
     }
     graph_schema_path = vm["graph-config"].as<std::string>();
-    if (!vm.count("data-path")) {
-      LOG(ERROR) << "data-path is required";
-      return -1;
-    }
-    data_path = vm["data-path"].as<std::string>();
-
     auto schema_res = gs::Schema::LoadFromYaml(graph_schema_path);
     if (!schema_res.ok()) {
       LOG(FATAL) << "Fail to load graph schema from yaml file: "
                  << graph_schema_path;
+    }
+
+    if (!vm.count("data-path")) {
+      LOG(FATAL) << "data-path is required";
+    }
+    data_path = vm["data-path"].as<std::string>();
+
+    auto remote_path = schema_res.value().GetRemotePath();
+
+    // If data_path starts with oss, download the data from oss
+    if (!remote_path.empty() && remote_path.find("oss://") == 0) {
+#ifdef BUILD_WITH_OSS
+      auto down_dir = gs::download_data_from_oss(
+          "default_graph", remote_path.substr(6), data_path);
+      LOG(INFO) << "Download data from oss to local path: " << remote_path
+                << ", " << data_path;
+      CHECK(down_dir == data_path);
+#else
+      LOG(FATAL) << "OSS is not supported in this build";
+#endif
     }
 
     // The schema is loaded just to get the plugin dir and plugin list
@@ -265,8 +310,10 @@ int main(int argc, char** argv) {
       gs::init_codegen_proxy(vm, engine_config_file, graph_schema_path);
     }
     db.Close();
-    auto load_res =
-        db.Open(schema_res.value(), data_path, service_config.shard_num);
+    gs::GraphDBConfig config(schema_res.value(), data_path, "",
+                             service_config.shard_num);
+    config.wal_uri = service_config.wal_uri;
+    auto load_res = db.Open(config);
     if (!load_res.ok()) {
       LOG(FATAL) << "Failed to load graph from data directory: "
                  << load_res.status().error_message();

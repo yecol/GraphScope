@@ -78,19 +78,25 @@ public class Utils {
                 outputStream.writeUTF(res[i]);
                 info(workerId, "from worker: " + i + ": " + res[i]);
             }
+            outputStream.writeLong(0, outputStream.bytesWritten() - 8);
+            outputStream.finishSetting();
+
+            // Distribute to others;
+            for (int dstWorkerId = 1; dstWorkerId < workerNum; ++dstWorkerId) {
+                FFIByteVector tempVec = (FFIByteVector) FFIByteVectorFactory.INSTANCE.create();
+                tempVec.appendVector(0, outputStream.getVector());
+                info(workerId, " sending to worker: [" + dstWorkerId + "] " + tempVec.size());
+                communicator.sendTo(dstWorkerId, tempVec);
+                info(
+                        workerId,
+                        " Successfully send to worker: [" + dstWorkerId + "] " + tempVec.size());
+                tempVec.delete();
+            }
+            vec.delete();
+            outputStream.close();
+            inputStream.close();
         } catch (IOException e) {
             e.printStackTrace();
-        }
-        outputStream.writeLong(0, outputStream.bytesWriten() - 8);
-        outputStream.finishSetting();
-
-        // Distribute to others;
-        for (int dstWorkerId = 1; dstWorkerId < workerNum; ++dstWorkerId) {
-            FFIByteVector tempVec = (FFIByteVector) FFIByteVectorFactory.INSTANCE.create();
-            tempVec.appendVector(0, outputStream.getVector());
-            info(workerId, " sending to worker: [" + dstWorkerId + "] " + tempVec.size());
-            communicator.sendTo(dstWorkerId, tempVec);
-            info(workerId, " Successfully send to worker: [" + dstWorkerId + "] " + tempVec.size());
         }
         return res;
     }
@@ -105,7 +111,7 @@ public class Utils {
             e.printStackTrace();
             return null;
         }
-        outputStream.writeLong(0, outputStream.bytesWriten() - 8);
+        outputStream.writeLong(0, outputStream.bytesWritten() - 8);
         outputStream.finishSetting();
         info(workerId, "now send to coordinator: " + selfIp);
         communicator.sendTo(0, outputStream.getVector());

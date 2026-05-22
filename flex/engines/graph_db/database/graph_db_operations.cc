@@ -17,139 +17,177 @@
 #include <unordered_map>
 #include <vector>
 
-#include <nlohmann/json.hpp>
-
 #include "flex/engines/graph_db/database/graph_db.h"
 #include "flex/engines/graph_db/database/graph_db_operations.h"
 #include "flex/engines/graph_db/database/graph_db_session.h"
 #include "flex/utils/service_utils.h"
 #include "utils/result.h"
+#include "utils/service_utils.h"
 
 namespace gs {
 
+bool check_primary_key_value_valid(
+    const rapidjson::Value& vertex_json,
+    const std::string& pk_filed_name = "primary_key_values") {
+  LOG(INFO) << "check_primary_key_value_valid for " << pk_filed_name << " "
+            << gs::rapidjson_stringify(vertex_json);
+  if (vertex_json.HasMember(pk_filed_name)) {
+    if (vertex_json[pk_filed_name].IsArray()) {
+      return vertex_json[pk_filed_name].Size() == 1 &&
+             vertex_json[pk_filed_name][0].HasMember("value");
+    }
+    return true;
+  }
+  LOG(INFO) << "check_primary_key_value_valid failed";
+  return false;
+}
+
 Result<std::string> GraphDBOperations::CreateVertex(
-    GraphDBSession& session, nlohmann::json&& input_json) {
+    GraphDBSession& session, rapidjson::Document&& input_json) {
   std::vector<VertexData> vertex_data;
   std::vector<EdgeData> edge_data;
   // Check if the input json contains vertex_request and edge_request
-  if (input_json.contains("vertex_request") == false ||
-      input_json["vertex_request"].is_array() == false ||
-      input_json["vertex_request"].size() == 0 ||
-      (input_json.contains("edge_request") == true &&
-       input_json["edge_request"].is_array() == false)) {
-    return Result<std::string>(
-        StatusCode::InvalidSchema,
+  if (input_json.HasMember("vertex_request") == false ||
+      input_json["vertex_request"].IsArray() == false ||
+      input_json["vertex_request"].Size() == 0 ||
+      (input_json.HasMember("edge_request") &&
+       input_json["edge_request"].IsArray() == false)) {
+    return Result<std::string>(gs::Status(
+        StatusCode::INVALID_SCHEMA,
         "Invalid input json, vertex_request and edge_request should be array "
-        "and not empty");
+        "and not empty"));
   }
   const Schema& schema = session.schema();
   // input vertex data and edge data
   try {
     // vertex data
-    for (auto& vertex_insert : input_json["vertex_request"]) {
+    for (auto& vertex_insert : input_json["vertex_request"].GetArray()) {
       vertex_data.push_back(inputVertex(vertex_insert, schema, session));
     }
     // edge data
-    for (auto& edge_insert : input_json["edge_request"]) {
+    for (auto& edge_insert : input_json["edge_request"].GetArray()) {
       edge_data.push_back(inputEdge(edge_insert, schema, session));
     }
+    LOG(INFO) << "CreateVertex edge_data: " << edge_data.size();
   } catch (std::exception& e) {
     return Result<std::string>(
-        StatusCode::InvalidSchema,
-        " Bad input parameter : " + std::string(e.what()));
+        gs::Status(StatusCode::INVALID_SCHEMA,
+                   " Bad input parameter : " + std::string(e.what())));
   }
   auto insert_result =
       insertVertex(std::move(vertex_data), std::move(edge_data), session);
   if (insert_result.ok()) {
-    nlohmann::json result;
-    result["message"] = "Vertex data is successfully inserted";
-    return Result<std::string>(result.dump());
+    rapidjson::Document result(rapidjson::kObjectType);
+    result.AddMember("message", "Vertex data is successfully inserted",
+                     result.GetAllocator());
+    return Result<std::string>(rapidjson_stringify(result));
   }
   return Result<std::string>(insert_result);
 }
-Result<std::string> GraphDBOperations::CreateEdge(GraphDBSession& session,
-                                                  nlohmann::json&& input_json) {
+Result<std::string> GraphDBOperations::CreateEdge(
+    GraphDBSession& session, rapidjson::Document&& input_json) {
   std::vector<VertexData> vertex_data;
   std::vector<EdgeData> edge_data;
   // Check if the input json contains edge_request
-  if (input_json.is_array() == false || input_json.size() == 0) {
-    return Result<std::string>(
-        StatusCode::InvalidSchema,
-        "Invalid input json, edge_request should be array and not empty");
+  if (input_json.IsArray() == false || input_json.Size() == 0) {
+    return Result<std::string>(gs::Status(
+        StatusCode::INVALID_SCHEMA,
+        "Invalid input json, edge_request should be array and not empty"));
   }
   const Schema& schema = session.schema();
   // input edge data
   try {
-    for (auto& edge_insert : input_json) {
+    for (auto& edge_insert : input_json.GetArray()) {
       edge_data.push_back(inputEdge(edge_insert, schema, session));
     }
   } catch (std::exception& e) {
     return Result<std::string>(
-        StatusCode::InvalidSchema,
-        " Bad input parameter : " + std::string(e.what()));
+        gs::Status(StatusCode::INVALID_SCHEMA,
+                   " Bad input parameter : " + std::string(e.what())));
   }
   auto insert_result = insertEdge(std::move(edge_data), session);
   if (insert_result.ok()) {
-    nlohmann::json result;
-    result["message"] = "Edge data is successfully inserted";
-    return Result<std::string>(result.dump());
+    rapidjson::Document result(rapidjson::kObjectType);
+    result.AddMember("message", "Edge data is successfully inserted",
+                     result.GetAllocator());
+    return Result<std::string>(rapidjson_stringify(result));
   }
   return Result<std::string>(insert_result);
 }
 Result<std::string> GraphDBOperations::UpdateVertex(
-    GraphDBSession& session, nlohmann::json&& input_json) {
+    GraphDBSession& session, rapidjson::Document&& input_json) {
   std::vector<VertexData> vertex_data;
-  std::vector<EdgeData> edge_data;
   const Schema& schema = session.schema();
   // input vertex data
   try {
-    vertex_data.push_back(inputVertex(input_json, schema, session));
+    if (!input_json.IsObject() || !input_json.HasMember("vertex_request")) {
+      return Result<std::string>(
+          gs::Status(StatusCode::INVALID_SCHEMA,
+                     "Invalid input json, update vertex request should be "
+                     "object or vertex_request field not set"));
+    }
+    if (!input_json["vertex_request"].IsArray()) {
+      return Result<std::string>(
+          gs::Status(StatusCode::INVALID_SCHEMA,
+                     "Invalid input json, vertex_request should be array"));
+    }
+    for (auto& vertex_update : input_json["vertex_request"].GetArray()) {
+      vertex_data.push_back(inputVertex(vertex_update, schema, session));
+    }
   } catch (std::exception& e) {
     return Result<std::string>(
-        StatusCode::InvalidSchema,
-        " Bad input parameter : " + std::string(e.what()));
+        gs::Status(StatusCode::INVALID_SCHEMA,
+                   " Bad input parameter : " + std::string(e.what())));
   }
   auto update_result = updateVertex(std::move(vertex_data), session);
   if (update_result.ok()) {
-    nlohmann::json result;
-    result["message"] = "Successfully update Vertex";
-    return Result<std::string>(result.dump());
+    rapidjson::Document result(rapidjson::kObjectType);
+    result.AddMember("message", "Successfully update Vertex",
+                     result.GetAllocator());
+    return Result<std::string>(rapidjson_stringify(result));
   }
   return Result<std::string>(update_result);
 }
-Result<std::string> GraphDBOperations::UpdateEdge(GraphDBSession& session,
-                                                  nlohmann::json&& input_json) {
+Result<std::string> GraphDBOperations::UpdateEdge(
+    GraphDBSession& session, rapidjson::Document&& input_json) {
   std::vector<VertexData> vertex_data;
   std::vector<EdgeData> edge_data;
   const Schema& schema = session.schema();
   // input edge data
   try {
-    edge_data.push_back(inputEdge(input_json, schema, session));
+    if (!input_json.IsArray()) {
+      return Result<std::string>(
+          gs::Status(StatusCode::INVALID_SCHEMA,
+                     "Invalid input json, edge_request should be array"));
+    }
+    for (auto& edge_update : input_json.GetArray()) {
+      edge_data.push_back(inputEdge(edge_update, schema, session));
+    }
   } catch (std::exception& e) {
     return Result<std::string>(
-        StatusCode::InvalidSchema,
-        " Bad input parameter : " + std::string(e.what()));
+        gs::Status(StatusCode::INVALID_SCHEMA,
+                   " Bad input parameter : " + std::string(e.what())));
   }
   auto update_result = updateEdge(std::move(edge_data), session);
   if (update_result.ok()) {
-    nlohmann::json result;
-    result["message"] = "Successfully update Edge";
-    return Result<std::string>(result.dump());
+    rapidjson::Document result(rapidjson::kObjectType);
+    result.AddMember("message", "Successfully update Edge",
+                     result.GetAllocator());
+    return Result<std::string>(rapidjson_stringify(result));
   }
   return Result<std::string>(update_result);
 }
 Result<std::string> GraphDBOperations::GetVertex(
     GraphDBSession& session,
     std::unordered_map<std::string, std::string>&& params) {
-  nlohmann::json result;
+  rapidjson::Document result(rapidjson::kObjectType);
   std::vector<VertexData> vertex_data;
-  std::vector<EdgeData> edge_data;
   std::vector<std::string> property_names;
   const Schema& schema = session.schema();
   // input vertex data
   VertexData vertex;
   std::string label = params["label"];
-  result["label"] = label;
+  result.AddMember("label", label, result.GetAllocator());
   vertex.pk_value = Any(std::string(params["primary_key_value"]));
   auto check_result =
       checkVertexSchema(schema, vertex, label, property_names, true);
@@ -157,17 +195,18 @@ Result<std::string> GraphDBOperations::GetVertex(
     return Result<std::string>(check_result);
   }
   vertex_data.push_back(vertex);
-  auto get_result = getVertex(std::move(vertex_data), property_names, session);
+  auto get_result = getVertex(std::move(vertex_data), property_names, session,
+                              result.GetAllocator());
   if (get_result.ok()) {
-    result["values"] = get_result.value();
-    return Result<std::string>(result.dump());
+    result.AddMember("values", get_result.value(), result.GetAllocator());
+    return Result<std::string>(rapidjson_stringify(result));
   }
   return Result<std::string>(get_result.status());
 }
 Result<std::string> GraphDBOperations::GetEdge(
     GraphDBSession& session,
     std::unordered_map<std::string, std::string>&& params) {
-  nlohmann::json result;
+  rapidjson::Document result(rapidjson::kObjectType);
   std::vector<VertexData> vertex_data;
   std::vector<EdgeData> edge_data;
   const Schema& schema = session.schema();
@@ -187,40 +226,58 @@ Result<std::string> GraphDBOperations::GetEdge(
     return Result<std::string>(check_result);
   }
   edge_data.push_back(edge);
-  result["src_label"] = src_label;
-  result["dst_label"] = dst_label;
-  result["edge_label"] = edge_label;
-  result["src_primary_key_value"] = src_pk_value;
-  result["dst_primary_key_value"] = dst_pk_value;
-  auto get_result = getEdge(std::move(edge_data), property_name, session);
+  result.AddMember("src_label", src_label, result.GetAllocator());
+  result.AddMember("dst_label", dst_label, result.GetAllocator());
+  result.AddMember("edge_label", edge_label, result.GetAllocator());
+  result.AddMember("src_primary_key_value", src_pk_value,
+                   result.GetAllocator());
+  result.AddMember("dst_primary_key_value", dst_pk_value,
+                   result.GetAllocator());
+  if (property_name.empty()) {
+    rapidjson::Value properties(rapidjson::kObjectType);
+    result.AddMember("properties", properties, result.GetAllocator());
+    return Result<std::string>(rapidjson_stringify(result));
+  }
+  auto get_result = getEdge(std::move(edge_data), property_name, session,
+                            result.GetAllocator());
   if (get_result.ok()) {
-    result["properties"] = get_result.value();
-    return Result<std::string>(result.dump());
+    result.AddMember("properties", get_result.value(), result.GetAllocator());
+    return Result<std::string>(rapidjson_stringify(result));
   }
   return Result<std::string>(get_result.status());
 }
 Result<std::string> GraphDBOperations::DeleteVertex(
-    GraphDBSession& session, nlohmann::json&& input_json) {
+    GraphDBSession& session, rapidjson::Document&& input_json) {
   // not implemented
-  return Result<std::string>(StatusCode::Unimplemented,
+  return Result<std::string>(StatusCode::UNIMPLEMENTED,
                              "delete_vertex is not implemented");
 }
-Result<std::string> GraphDBOperations::DeleteEdge(GraphDBSession& session,
-                                                  nlohmann::json&& input_json) {
+Result<std::string> GraphDBOperations::DeleteEdge(
+    GraphDBSession& session, rapidjson::Document&& input_json) {
   // not implemented
-  return Result<std::string>(StatusCode::Unimplemented,
+  return Result<std::string>(StatusCode::UNIMPLEMENTED,
                              "delete_edge is not implemented");
 }
 
-VertexData GraphDBOperations::inputVertex(const nlohmann::json& vertex_json,
+VertexData GraphDBOperations::inputVertex(const rapidjson::Value& vertex_json,
                                           const Schema& schema,
                                           GraphDBSession& session) {
   VertexData vertex;
   std::string label = jsonToString(vertex_json["label"]);
-  vertex.pk_value = Any(jsonToString(vertex_json["primary_key_value"]));
+  if (!check_primary_key_value_valid(vertex_json, "primary_key_values") &&
+      !check_primary_key_value_valid(vertex_json, "primary_key_value")) {
+    throw std::runtime_error("primary_key_values/primary_key_value is invalid");
+  }
+
+  if (vertex_json.HasMember("primary_key_values")) {
+    vertex.pk_value =
+        Any(jsonToString(vertex_json["primary_key_values"][0]["value"]));
+  } else {
+    vertex.pk_value = Any(jsonToString(vertex_json["primary_key_value"]));
+  }
   std::unordered_set<std::string> property_names;
   std::vector<std::string> property_names_arr;
-  for (auto& property : vertex_json["properties"]) {
+  for (auto& property : vertex_json["properties"].GetArray()) {
     auto name_string = jsonToString(property["name"]);
     auto value_string = jsonToString(property["value"]);
     if (property_names.find(name_string) != property_names.end()) {
@@ -239,22 +296,45 @@ VertexData GraphDBOperations::inputVertex(const nlohmann::json& vertex_json,
   }
   return vertex;
 }
-EdgeData GraphDBOperations::inputEdge(const nlohmann::json& edge_json,
+EdgeData GraphDBOperations::inputEdge(const rapidjson::Value& edge_json,
                                       const Schema& schema,
                                       GraphDBSession& session) {
   EdgeData edge;
   std::string src_label = jsonToString(edge_json["src_label"]);
   std::string dst_label = jsonToString(edge_json["dst_label"]);
   std::string edge_label = jsonToString(edge_json["edge_label"]);
-  edge.src_pk_value = Any(jsonToString(edge_json["src_primary_key_value"]));
-  edge.dst_pk_value = Any(jsonToString(edge_json["dst_primary_key_value"]));
+  if (!check_primary_key_value_valid(edge_json, "src_primary_key_values") &&
+      !check_primary_key_value_valid(edge_json, "src_primary_key_value")) {
+    throw std::runtime_error(
+        "src_primary_key_values/src_primary_key_value is invalid");
+  }
+  if (!check_primary_key_value_valid(edge_json, "dst_primary_key_values") &&
+      !check_primary_key_value_valid(edge_json, "dst_primary_key_value")) {
+    throw std::runtime_error("dst_primary_key_values is invalid");
+  }
+  if (edge_json.HasMember("src_primary_key_values")) {
+    edge.src_pk_value =
+        Any(jsonToString(edge_json["src_primary_key_values"][0]["value"]));
+  } else {
+    edge.src_pk_value = Any(jsonToString(edge_json["src_primary_key_value"]));
+  }
+  if (edge_json.HasMember("dst_primary_key_values")) {
+    edge.dst_pk_value =
+        Any(jsonToString(edge_json["dst_primary_key_values"][0]["value"]));
+  } else {
+    edge.dst_pk_value = Any(jsonToString(edge_json["dst_primary_key_value"]));
+  }
   // Check that all parameters in the parameter
-  if (edge_json["properties"].size() != 1) {
+  if (edge_json["properties"].Size() > 1) {
     throw std::runtime_error(
         "size should be 1(only support single property edge)");
   }
-  edge.property_value = Any(jsonToString(edge_json["properties"][0]["value"]));
-  std::string property_name = edge_json["properties"][0]["name"];
+  std::string property_name = "";
+  if (edge_json["properties"].Size() == 1) {
+    edge.property_value =
+        Any(jsonToString(edge_json["properties"][0]["value"]));
+    property_name = edge_json["properties"][0]["name"].GetString();
+  }
   auto check_result = checkEdgeSchema(schema, edge, src_label, dst_label,
                                       edge_label, property_name);
   if (check_result.ok() == false) {
@@ -284,14 +364,14 @@ Status GraphDBOperations::checkVertexSchema(
          col_index++) {
       if (input_property_names[col_index] != properties_name[col_index]) {
         throw std::runtime_error(
-            "properties name not match, pleace check the order and name");
+            "properties name not match, please check the order and name");
       }
       vertex.properties[col_index] = ConvertStringToAny(
           vertex.properties[col_index].to_string(), properties_type[col_index]);
     }
     return Status::OK();
   } catch (std::exception& e) {
-    return Status(StatusCode::InvalidSchema,
+    return Status(StatusCode::INVALID_SCHEMA,
                   " Bad input parameter : " + std::string(e.what()));
   }
 }
@@ -305,14 +385,17 @@ Status GraphDBOperations::checkEdgeSchema(const Schema& schema, EdgeData& edge,
     edge.src_label_id = schema.get_vertex_label_id(src_label);
     edge.dst_label_id = schema.get_vertex_label_id(dst_label);
     edge.edge_label_id = schema.get_edge_label_id(edge_label);
+    auto& result = schema.get_edge_property_names(
+        edge.src_label_id, edge.dst_label_id, edge.edge_label_id);
     if (is_get) {
-      property_name = schema.get_edge_property_names(
-          edge.src_label_id, edge.dst_label_id, edge.edge_label_id)[0];
+      if (result.size() >= 1) {
+        property_name = result[0];
+      } else {
+        property_name = "";
+      }
     } else {
       // update or add
-      if (property_name !=
-          schema.get_edge_property_names(edge.src_label_id, edge.dst_label_id,
-                                         edge.edge_label_id)[0]) {
+      if (property_name != (result.size() >= 1 ? result[0] : "")) {
         throw std::runtime_error("property name not match");
       }
       PropertyType colType = schema.get_edge_property(
@@ -328,7 +411,7 @@ Status GraphDBOperations::checkEdgeSchema(const Schema& schema, EdgeData& edge,
         std::get<0>(schema.get_vertex_primary_key(edge.dst_label_id)[0]));
     return Status::OK();
   } catch (std::exception& e) {
-    return Status(StatusCode::InvalidSchema,
+    return Status(StatusCode::INVALID_SCHEMA,
                   " Bad input parameter : " + std::string(e.what()));
   }
 }
@@ -358,7 +441,7 @@ Status GraphDBOperations::checkEdgeExistsWithInsert(
       }
     }
   } catch (std::exception& e) {
-    return Status(StatusCode::InvalidSchema, e.what());
+    return Status(StatusCode::INVALID_SCHEMA, e.what());
   }
   return Status::OK();
 }
@@ -388,7 +471,7 @@ Status GraphDBOperations::checkEdgeExists(
       }
     }
   } catch (std::exception& e) {
-    return Status(StatusCode::InvalidSchema, e.what());
+    return Status(StatusCode::INVALID_SCHEMA, e.what());
   }
   return Status::OK();
 }
@@ -407,7 +490,7 @@ Status GraphDBOperations::checkVertexExists(
     }
     txn.Commit();
   } catch (std::exception& e) {
-    return Status(StatusCode::InvalidSchema, e.what());
+    return Status(StatusCode::INVALID_SCHEMA, e.what());
   }
   return Status::OK();
 }
@@ -435,7 +518,7 @@ Status GraphDBOperations::singleInsertVertex(
     }
     txnWrite.Commit();
   } catch (std::exception& e) {
-    return Status(StatusCode::InvalidSchema, e.what());
+    return Status(StatusCode::INVALID_SCHEMA, e.what());
   }
   return Status::OK();
 }
@@ -464,7 +547,7 @@ Status GraphDBOperations::multiInsert(std::vector<VertexData>&& vertex_data,
     }
     txnWrite.Commit();
   } catch (std::exception& e) {
-    return Status(StatusCode::InvalidSchema, e.what());
+    return Status(StatusCode::INVALID_SCHEMA, e.what());
   }
   return Status::OK();
 }
@@ -502,7 +585,7 @@ Status GraphDBOperations::singleInsertEdge(std::vector<EdgeData>&& edge_data,
     }
     txnWrite.Commit();
   } catch (std::exception& e) {
-    return Status(StatusCode::InvalidSchema, e.what());
+    return Status(StatusCode::INVALID_SCHEMA, e.what());
   }
   return Status::OK();
 }
@@ -543,7 +626,7 @@ Status GraphDBOperations::updateVertex(std::vector<VertexData>&& vertex_data,
     }
     txnWrite.Commit();
   } catch (std::exception& e) {
-    return Status(StatusCode::InvalidSchema, e.what());
+    return Status(StatusCode::INVALID_SCHEMA, e.what());
   }
   return Status::OK();
 }
@@ -580,17 +663,18 @@ Status GraphDBOperations::updateEdge(std::vector<EdgeData>&& edge_data,
                      dst_vid, edge.edge_label_id, edge.property_value);
     txn2.Commit();
   } catch (std::exception& e) {
-    return Status(StatusCode::InvalidSchema, e.what());
+    return Status(StatusCode::INVALID_SCHEMA, e.what());
   }
   return Status::OK();
 }
 
-Result<nlohmann::json> GraphDBOperations::getVertex(
+Result<rapidjson::Value> GraphDBOperations::getVertex(
     std::vector<VertexData>&& vertex_data,
-    const std::vector<std::string>& property_names, GraphDBSession& session) {
+    const std::vector<std::string>& property_names, GraphDBSession& session,
+    rapidjson::Document::AllocatorType& allocator) {
   try {
     auto& vertex = vertex_data[0];
-    nlohmann::json result = nlohmann::json::array();
+    rapidjson::Document result(rapidjson::kArrayType, &allocator);
     auto txn = session.GetReadTransaction();
     auto vertex_db = txn.FindVertex(vertex.label_id, vertex.pk_value);
     if (vertex_db.IsValid() == false) {
@@ -598,24 +682,25 @@ Result<nlohmann::json> GraphDBOperations::getVertex(
       throw std::runtime_error("Vertex not found");
     }
     for (int i = 0; i < vertex_db.FieldNum(); i++) {
-      nlohmann::json values;
-      values["name"] = property_names[i];
-      values["value"] = vertex_db.GetField(i).to_string();
-      result.push_back(values);
+      rapidjson::Document values(rapidjson::kObjectType, &allocator);
+      values.AddMember("name", property_names[i], allocator);
+      values.AddMember("value", vertex_db.GetField(i).to_string(), allocator);
+      result.PushBack(values, allocator);
     }
     txn.Commit();
-    return Result<nlohmann::json>(result);
+    return Result<rapidjson::Value>(std::move(result));
   } catch (std::exception& e) {
-    return Result<nlohmann::json>(Status(StatusCode::InvalidSchema, e.what()));
+    return Result<rapidjson::Value>(
+        Status(StatusCode::INVALID_SCHEMA, e.what()));
   }
 }
 
-Result<nlohmann::json> GraphDBOperations::getEdge(
+Result<rapidjson::Value> GraphDBOperations::getEdge(
     std::vector<EdgeData>&& edge_data, const std::string& property_name,
-    GraphDBSession& session) {
+    GraphDBSession& session, rapidjson::Document::AllocatorType& allocator) {
   try {
     const auto& edge = edge_data[0];
-    nlohmann::json result = nlohmann::json::array();
+    rapidjson::Document result(rapidjson::kArrayType);
     auto txn = session.GetReadTransaction();
     vid_t src_vid, dst_vid;
     if (txn.GetVertexIndex(edge.src_label_id, edge.src_pk_value, src_vid) ==
@@ -630,20 +715,21 @@ Result<nlohmann::json> GraphDBOperations::getEdge(
          edgeIt.IsValid(); edgeIt.Next()) {
       if (edgeIt.GetNeighbor() != dst_vid)
         continue;
-      nlohmann::json push_json;
-      push_json["name"] = property_name;
-      push_json["value"] = edgeIt.GetData().to_string();
-      result.push_back(push_json);
+      rapidjson::Document push_json(rapidjson::kObjectType, &allocator);
+      push_json.AddMember("name", property_name, allocator);
+      push_json.AddMember("value", edgeIt.GetData().to_string(), allocator);
+      result.PushBack(push_json, allocator);
       break;
     }
-    if (result.empty()) {
+    if (result.Empty()) {
       txn.Abort();
       throw std::runtime_error("Edge not found");
     }
     txn.Commit();
-    return Result<nlohmann::json>(result);
+    return Result<rapidjson::Value>(std::move(result));
   } catch (std::exception& e) {
-    return Result<nlohmann::json>(Status(StatusCode::InvalidSchema, e.what()));
+    return Result<rapidjson::Value>(
+        Status(StatusCode::INVALID_SCHEMA, e.what()));
   }
 }
 

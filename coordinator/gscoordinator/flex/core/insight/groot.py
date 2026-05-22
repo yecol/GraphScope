@@ -26,10 +26,17 @@ import socket
 from typing import List
 
 import psutil
+from graphscope.config import Config
 from gremlin_python.driver.client import Client
+from kubernetes import client as kube_client
+from kubernetes import config as kube_config
 
 from gscoordinator.flex.core.config import CLUSTER_TYPE
 from gscoordinator.flex.core.config import CREATION_TIME
+from gscoordinator.flex.core.config import GROOT_STORE_POD_ADMIN_PORT
+from gscoordinator.flex.core.config import GROOT_STORE_POD_SUFFIX
+from gscoordinator.flex.core.config import INSTANCE_NAME
+from gscoordinator.flex.core.config import NAMESPACE
 from gscoordinator.flex.core.config import STUDIO_WRAPPER_ENDPOINT
 from gscoordinator.flex.core.config import WORKSPACE
 from gscoordinator.flex.core.datasource import DataSourceManager
@@ -40,6 +47,8 @@ from gscoordinator.flex.core.insight.utils import convert_to_configini
 from gscoordinator.flex.core.scheduler import cancel_job
 from gscoordinator.flex.core.scheduler import schedule
 from gscoordinator.flex.core.utils import encode_datetime
+from gscoordinator.flex.core.utils import get_pod_ips
+from gscoordinator.flex.core.utils import resolve_api_client
 from gscoordinator.flex.models import JobStatus
 
 logger = logging.getLogger("graphscope")
@@ -80,36 +89,71 @@ class GrootClient(object):
                     self._graph, JobStatus.from_dict(status)
                 )
         except Exception as e:
-            logger.warn("Failed to recover job status: %s", str(e))
+            logger.warning("Failed to recover job status: %s", str(e))
 
     def _pickle_job_status_impl(self):
         try:
             status = {}
-            # we can't pickle class objct with thread, so we pickle the status
+            # we can't pickle class object with thread, so we pickle the status
             for jobid, fetching in self._job_status.items():
                 status[jobid] = fetching.status
             with open(self._job_status_pickle_path, "wb") as f:
                 pickle.dump(status, f)
         except Exception as e:
-            logger.warn("Pickle job status failed: %s", str(e))
+            logger.warning("Pickle job status failed: %s", str(e))
+    
+    def _restart_pod(self, pod_name, pod_ip, port):
+        logger.info(f"Restart groot store pod {pod_name}, ip {pod_ip}")
+        conn = http.client.HTTPConnection(pod_ip, port)
+        conn.request("POST", "/shutdown")
+        # expect the request didn't get any response, since the pod will kill it self
+        try: 
+            r = conn.getresponse()
+            if r.status != 500 or r.status != 503:
+                raise RuntimeError("Failed to restart groot store pod: " + r.read().decode("utf-8"))
+            else:
+                logger.info(f"Restart groot store pod {pod_name} successfully")
+        except http.client.RemoteDisconnected:
+            logger.info(f"Restart groot store pod {pod_name} successfully")
+        except Exception as e:
+            raise RuntimeError("Failed to restart groot store pod: " + str(e))
+        finally:
+            conn.close()
 
     def check_graph_exists(self, graph_id: str):
         if self._graph.id != graph_id:
             raise RuntimeError(f"Graph {graph_id} not exist.")
 
     def list_service_status(self) -> List[dict]:
-        gremlin_interface = self._graph.gremlin_interface
-        return [
+        groot_endpoints = self._graph.groot_endpoints
+        res = [
             {
                 "graph_id": self._graph.id,
                 "status": "Running",
                 "start_time": CREATION_TIME,
                 "sdk_endpoints": {
-                    "gremlin": gremlin_interface["gremlin_endpoint"],
-                    "grpc": gremlin_interface["grpc_endpoint"],
+                    "gremlin": groot_endpoints["gremlin_endpoint"],
+                    "grpc": groot_endpoints["grpc_endpoint"],
                 },
             }
         ]
+        if "cypher_endpoint" in groot_endpoints and groot_endpoints["cypher_endpoint"]:
+            res[0]["sdk_endpoints"]["cypher"] = groot_endpoints["cypher_endpoint"]
+        return res
+
+    def stop_service(self) -> str:
+        raise RuntimeError("Stop service is not supported yet.")
+
+    def restart_service(self) -> str:
+        api_client = resolve_api_client()
+        pod_prefix = "{0}-{1}".format(INSTANCE_NAME, GROOT_STORE_POD_SUFFIX)
+        ip_names = get_pod_ips(api_client, NAMESPACE, pod_prefix)
+        for (ip, name) in ip_names:
+            logger.info(f"Restart groot store pod {name}, ip {ip}")
+            self._restart_pod(name, ip, GROOT_STORE_POD_ADMIN_PORT)
+
+    def start_service(self, graph_id: str) -> str:
+        raise RuntimeError("Start service is not supported yet.")
 
     def create_graph(self, graph: dict) -> dict:
         raise RuntimeError("Create graph is not supported yet.")
@@ -283,12 +327,12 @@ class GrootClient(object):
 
     def gremlin_service_available(self) -> bool:
         try:
-            gremlin_interface = self._graph.gremlin_interface
+            groot_endpoints = self._graph.groot_endpoints
             client = Client(
-                gremlin_interface["gremlin_endpoint"],
+                groot_endpoints["gremlin_endpoint"],
                 "g",
-                username=gremlin_interface["username"],
-                password=gremlin_interface["password"],
+                username=groot_endpoints["username"],
+                password=groot_endpoints["password"],
             )
             client.submit(
                 "g.with('evaluationTimeout', 5000).V().limit(1)"
@@ -305,7 +349,11 @@ class GrootClient(object):
             except:  # noqa: E722
                 pass
             return True
+    
+    def pod_available(self) -> bool:
+        return self._graph.pod_available()
+        
 
 
-def init_groot_client():
+def init_groot_client(config: Config):
     return GrootClient()

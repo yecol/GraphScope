@@ -41,7 +41,7 @@ bool HQPSAdhocReadApp::Query(const GraphDBSession& graph, Decoder& input,
                << input.size();
     return false;
   }
-  std::string_view str_view(input.data(), input.size());
+  std::string_view str_view(input.data(), input.size() - 1);
   std::string input_lib_path = std::string(str_view);
   auto app_factory = std::make_shared<SharedLibraryAppFactory>(input_lib_path);
   auto app_wrapper = loadAdhocQuery(input_lib_path, app_factory, graph.db());
@@ -55,8 +55,11 @@ bool HQPSAdhocReadApp::Query(const GraphDBSession& graph, Decoder& input,
                << app_wrapper.app()->mode();
     return false;
   }
+  // Adhoc read app should not have input, so we pass an empty decoder
+  std::vector<char> dummy_input;
+  gs::Decoder dummy_decoder(dummy_input.data(), dummy_input.size());
   auto casted = dynamic_cast<ReadAppBase*>(app_wrapper.app());
-  return casted->Query(graph, input, output);
+  return casted->Query(graph, dummy_decoder, output);
 }
 
 bool HQPSAdhocWriteApp::Query(GraphDBSession& graph, Decoder& input,

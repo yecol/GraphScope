@@ -1,7 +1,7 @@
 ARG ARCH=amd64
 ARG REGISTRY=registry.cn-hongkong.aliyuncs.com
-ARG BUILDER_VERSION=latest
-FROM $REGISTRY/graphscope/graphscope-dev:$BUILDER_VERSION-$ARCH as builder
+ARG VINEYARD_VERSION=latest
+FROM $REGISTRY/graphscope/graphscope-dev:$VINEYARD_VERSION-$ARCH as builder
 
 ARG CI=false
 ARG ENABLE_COORDINATOR=false
@@ -14,6 +14,7 @@ COPY --chown=graphscope:graphscope . /home/graphscope/graphscope
 COPY --chown=graphscope:graphscope ./interactive_engine/assembly/src/conf/maven.settings.xml /home/graphscope/.m2/settings.xml
 
 USER graphscope
+RUN rustup toolchain install 1.87.0 && rustup default 1.87.0
 
 RUN cd /home/graphscope/graphscope \
     && . ~/.graphscope_env \
@@ -42,7 +43,7 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && \
 
 RUN apt-get update -y && \
     apt-get install -y sudo default-jdk dnsutils tzdata lsof \
-        libjemalloc-dev libunwind-dev binutils less && \
+        libjemalloc-dev libunwind-dev binutils less vim && \
     apt-get clean -y && \
     rm -rf /var/lib/apt/lists/*
 

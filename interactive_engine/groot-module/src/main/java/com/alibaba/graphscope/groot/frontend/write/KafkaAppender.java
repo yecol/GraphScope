@@ -19,6 +19,7 @@ import com.alibaba.graphscope.groot.wal.*;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.metrics.Meter;
 
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -161,7 +162,7 @@ public class KafkaAppender {
                     OperationBatch batch = entry.getValue().build();
                     // logger.info("Log writer append storeId [{}], batch size: {}", storeId,
                     // batch.getOperationCount());
-                    logWriter.append(storeId, new LogEntry(ingestSnapshotId.get(), batch));
+                    logWriter.appendAsync(storeId, new LogEntry(ingestSnapshotId.get(), batch));
                 }
             } catch (Exception e) {
                 // write failed, just throw out to fail this task
@@ -240,30 +241,32 @@ public class KafkaAppender {
         types.add(OperationType.ADD_EDGE_TYPE_PROPERTIES);
         logger.info("replay DML records of from offset [{}], ts [{}]", offset, timestamp);
 
-        long batchSnapshotId = 0;
+        List<Long> ids = new ArrayList<>();
         int replayCount = 0;
 
         try (LogWriter logWriter = this.logService.createWriter()) {
             for (int storeId = 0; storeId < storeCount; ++storeId) {
                 try (LogReader logReader =
                         this.logService.createReader(storeId, offset, timestamp)) {
-                    ReadLogEntry readLogEntry;
-                    while (!shouldStop && (readLogEntry = logReader.readNext()) != null) {
-                        LogEntry logEntry = readLogEntry.getLogEntry();
+                    long batchSnapshotId = ingestSnapshotId.get();
+                    ConsumerRecord<LogEntry, LogEntry> readLogEntry;
+                    while (!shouldStop && (readLogEntry = logReader.readNextRecord()) != null) {
+                        LogEntry logEntry = readLogEntry.value();
                         OperationBatch batch =
                                 Utils.extractOperations(logEntry.getOperationBatch(), types);
                         if (batch.getOperationCount() == 0) {
                             continue;
                         }
-                        logWriter.append(storeId, new LogEntry(ingestSnapshotId.get(), batch));
+                        logWriter.appendAsync(storeId, new LogEntry(batchSnapshotId, batch));
                         replayCount++;
                     }
+                    ids.add(batchSnapshotId + 1);
                 }
             }
         }
 
         logger.info("replay DML records finished. total replayed [{}] records", replayCount);
-        return List.of(batchSnapshotId);
+        return ids;
     }
 
     /**

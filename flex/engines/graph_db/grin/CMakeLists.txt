@@ -46,11 +46,12 @@ else ()
         set(ARROW_STATIC_LIB arrow_static)
     endif()
 endif ()
-
-# include nlohmann json
-include_directories(SYSTEM ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/nlohmann-json/single_include)
 # include odps cpp sdk
 include_directories(SYSTEM ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/odps/include/)
+add_definitions(-DRAPIDJSON_HAS_CXX11=1)
+add_definitions(-DRAPIDJSON_HAS_STDSTRING=1)
+add_definitions(-DRAPIDJSON_HAS_CXX11_RVALUE_REFS=1)
+add_definitions(-DRAPIDJSON_HAS_CXX11_RANGE_FOR=1)
 
 find_package(yaml-cpp REQUIRED)
 include_directories(SYSTEM ${yaml-cpp_INCLUDE_DIRS})
@@ -62,6 +63,11 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../../..)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../../storages/rt_mutable_graph)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../../utils/property)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+if (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../../../build/utils)
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../../build/utils)
+else ()
+    message(FATAL_ERROR "Please build flex first")
+endif ()
 
 file(GLOB_RECURSE FILES_NEED_FORMAT "src/*.cc")
 

@@ -10,6 +10,9 @@
 	path = learning_engine/graphlearn-for-pytorch
 	url = https://github.com/alibaba/graphlearn-for-pytorch.git
 
-[submodule "flex/third_party/nlohmann-json"]
-	path = flex/third_party/nlohmann-json
-	url = https://github.com/nlohmann/json.git
+[submodule "flex/third_party/parallel-hashmap"]
+	path = flex/third_party/parallel-hashmap
+	url = https://github.com/greg7mdp/parallel-hashmap.git
+[submodule "flex/third_party/aliyun-oss-cpp-sdk"]
+	path = flex/third_party/aliyun-oss-cpp-sdk
+	url = https://github.com/aliyun/aliyun-oss-cpp-sdk.git

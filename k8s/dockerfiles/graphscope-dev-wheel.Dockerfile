@@ -51,6 +51,7 @@ RUN yum install -y sudo vim && \
     yum remove java-1.8.0-openjdk-devel java-1.8.0-openjdk java-1.8.0-openjdk-headless -y && \
     yum install java-11-openjdk-devel -y && \
     yum clean all -y --enablerepo='*' && \
+    yum install -y netcat && \ 
     rm -rf /var/cache/yum
 
 RUN mkdir -p /opt/graphscope /opt/vineyard && chown -R graphscope:graphscope /opt/graphscope /opt/vineyard
@@ -61,8 +62,8 @@ WORKDIR /home/graphscope
 COPY --chown=graphscope:graphscope . /home/graphscope/GraphScope
 ARG VINEYARD_VERSION=main
 RUN cd /home/graphscope/GraphScope && \
-    python3 -m pip install click packaging --user && \
-    python3 gsctl.py install-deps dev --v6d-version=$VINEYARD_VERSION -j $(nproc) && \
+    python3 -m pip install click --user && \
+    python3 gsctl.py install-deps dev --v6d-version=$VINEYARD_VERSION && \
     sudo rm -rf /home/graphscope/GraphScope && \
     sudo yum clean all -y && \
     sudo rm -fr /var/cache/yum

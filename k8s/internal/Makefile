@@ -1,6 +1,7 @@
-MKFILE_PATH 			:= $(abspath $(lastword $(MAKEFILE_LIST)))
-WORKING_DIR 			:= $(dir $(MKFILE_PATH))
-SHORT_SHA   			:= $(shell git rev-parse --short HEAD)
+MKFILE_PATH            := $(abspath $(lastword $(MAKEFILE_LIST)))
+WORKING_DIR            := $(dir $(MKFILE_PATH))
+SHORT_SHA              := $(shell git rev-parse --short HEAD)
+VINEYARD_VERSION_FILE  := ${WORKING_DIR}/../../V6D_VERSION
 
 .PHONY: graphscope-jupyter-manylinux2014-py3 graphscope-py3-package graphscope-client-py3-package
 .PHONY: graphscope-darwin-py3 graphscope-client-darwin-py3
@@ -43,7 +44,7 @@ GRAPHSCOPE_HOME ?= /usr/local
 INSTALL_PREFIX ?= /opt/graphscope
 
 VERSION ?= latest
-VINEYARD_VERSION ?= v0.22.0
+VINEYARD_VERSION ?= $(shell cat $(VINEYARD_VERSION_FILE))
 PROFILE ?= release
 CI ?= false
 
@@ -109,6 +110,7 @@ graphscope-manylinux2014-py3-nodocker:
 	sudo sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-* && \
 	sudo yum install java-11-openjdk-devel -y && \
 	sudo yum remove java-1.8.0-openjdk-devel java-1.8.0-openjdk java-1.8.0-openjdk-headless -y && \
+	rustup toolchain install 1.87.0 && rustup default 1.87.0 && \
 	cd $(WORKING_DIR)/../.. && \
 		if [[ "${PLATFORM}" == "aarch64" ]]; then \
 			export AUDITWHEEL_PLAT=manylinux2014_${PLATFORM}; \

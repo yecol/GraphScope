@@ -52,7 +52,37 @@ CALL : ( 'C' | 'c' ) ( 'A' | 'a' ) ( 'L' | 'l' ) ( 'L' | 'l' ) ;
 YIELD : ( 'Y' | 'y' ) ( 'I' | 'i' ) ( 'E' | 'e' ) ( 'L' | 'l' ) ( 'D' | 'd' ) ;
 
 oC_RegularQuery
-     :  oC_Match ( SP? ( oC_Match | oC_With ) )* ( SP oC_Return ) ;
+     : ( ( oC_ReadingClause | oC_UpdatingClause ) SP? )* SP? oC_ReadingClause ( SP oC_Return )
+     | ( ( oC_ReadingClause | oC_UpdatingClause ) SP? )* SP? oC_UpdatingClause ( SP oC_Return )?
+     ;
+
+oC_UpdatingClause
+      : oC_Create
+      ;
+
+oC_ReadingClause
+     :    oC_Match
+     |    oC_With
+     |    oC_StandaloneCall
+     |    oC_Unwind
+     |    oC_UnionCallSubQuery
+     ;
+
+CREATE : ( 'C' | 'c' ) ( 'R' | 'r' ) ( 'E' | 'e' ) ( 'A' | 'a' ) ( 'T' | 't' ) ( 'E' | 'e' ) ;
+
+oC_Create
+      :  CREATE SP? oC_Pattern ;
+
+oC_SubQuery
+     : ( ( oC_Match | oC_With | oC_Unwind ) SP? )* ( SP? oC_Return ) ;
+
+oC_CallSubQuery
+     :  CALL SP? '{' SP? oC_SubQuery SP? '}';
+
+oC_UnionCallSubQuery
+     : oC_CallSubQuery ( SP? UNION SP? oC_CallSubQuery )* ;
+
+UNION : ( 'U' | 'u' ) ( 'N' | 'n' ) ( 'I' | 'i' ) ( 'O' | 'o' ) ( 'N' | 'n' ) ;
 
 oC_Match
      :  ( OPTIONAL SP )? MATCH SP? oC_Pattern ( SP? oC_Where )? ;
@@ -60,6 +90,11 @@ oC_Match
 MATCH : ( 'M' | 'm' ) ( 'A' | 'a' ) ( 'T' | 't' ) ( 'C' | 'c' ) ( 'H' | 'h' ) ;
 
 OPTIONAL : ( 'O' | 'o' ) ( 'P' | 'p' ) ( 'T' | 't' ) ( 'I' | 'i' ) ( 'O' | 'o' ) ( 'N' | 'n' ) ( 'A' | 'a' ) ( 'L' | 'l' ) ;
+
+oC_Unwind
+      :  UNWIND SP? oC_Expression SP AS SP oC_Variable ;
+
+UNWIND : ( 'U' | 'u' ) ( 'N' | 'n' ) ( 'W' | 'w' ) ( 'I' | 'i' ) ( 'N' | 'n' ) ( 'D' | 'd' ) ;
 
 // multiple sentences
 oC_Pattern
@@ -71,12 +106,15 @@ oC_PatternPart
        ;
 
 oC_AnonymousPatternPart
-                    :  oC_PatternElement ;
+                    :  oC_ShortestPathOption? oC_PatternElement ;
 
 oC_PatternElement
-              :  ( oC_NodePattern ( SP? oC_PatternElementChain )* )
-                  | ( '(' oC_PatternElement ')' )
-                  ;
+              : ( oC_NodePattern ( SP? oC_PatternElementChain )* )
+              | ( '(' oC_PatternElement ')' )
+              ;
+
+oC_ShortestPathOption
+            : ( ALL SP? )? SHORTESTPATH ;
 
 oC_With
     :  WITH oC_ProjectionBody ( SP? oC_Where )? ;

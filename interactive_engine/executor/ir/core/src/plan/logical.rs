@@ -251,7 +251,7 @@ impl LogicalPlan {
                         let node_parent_children_len = node_parent.borrow().children.len();
                         node_flow += node_parent_flow / (node_parent_children_len as u64);
                     } else {
-                        // If one of current node's parent's flow is still not avaliable, it suggests that
+                        // If one of current node's parent's flow is still not available, it suggests that
                         // it is too early to get current node's flow
                         // Therefore, we delay the current node's flow computation by adding it to the queue again
                         // and jump to the next iteration
@@ -4943,5 +4943,23 @@ mod test {
             plan.subplan(plan.get_node(1).unwrap(), plan.get_node(3).unwrap(), false)
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn test_data_type_conversion() {
+        let schema =
+            Schema::from_json(std::fs::File::open("resource/modern_schema_pk.json").unwrap()).unwrap();
+        for entity in schema.get_entities() {
+            let columns = &entity.columns;
+            for column in columns {
+                assert!(column.data_type.is_some());
+            }
+        }
+        for relation in schema.get_relations() {
+            let columns = &relation.columns;
+            for column in columns {
+                assert!(&column.data_type.is_some());
+            }
+        }
     }
 }

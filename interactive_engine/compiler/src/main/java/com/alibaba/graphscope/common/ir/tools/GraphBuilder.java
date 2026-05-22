@@ -20,6 +20,9 @@ import static java.util.Objects.requireNonNull;
 
 import com.alibaba.graphscope.common.config.Configs;
 import com.alibaba.graphscope.common.config.FrontendConfig;
+import com.alibaba.graphscope.common.exception.FrontendException;
+import com.alibaba.graphscope.common.ir.meta.function.GraphFunctions;
+import com.alibaba.graphscope.common.ir.meta.procedure.StoredProcedureMeta;
 import com.alibaba.graphscope.common.ir.meta.schema.GraphOptSchema;
 import com.alibaba.graphscope.common.ir.meta.schema.IrGraphSchema;
 import com.alibaba.graphscope.common.ir.rel.*;
@@ -38,6 +41,7 @@ import com.alibaba.graphscope.common.ir.rex.RexCallBinding;
 import com.alibaba.graphscope.common.ir.tools.config.*;
 import com.alibaba.graphscope.common.ir.type.*;
 import com.alibaba.graphscope.gremlin.Utils;
+import com.alibaba.graphscope.proto.frontend.Code;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -49,6 +53,7 @@ import org.apache.calcite.rel.AbstractRelNode;
 import org.apache.calcite.rel.RelFieldCollation;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.*;
+import org.apache.calcite.rel.logical.LogicalValues;
 import org.apache.calcite.rel.type.*;
 import org.apache.calcite.rex.*;
 import org.apache.calcite.sql.SqlAggFunction;
@@ -177,11 +182,13 @@ public class GraphBuilder extends RelBuilder {
                         config.getAlias(),
                         getAliasNameWithId(
                                 config.getStartAlias(),
-                                (RelDataType type) ->
-                                        (type instanceof GraphSchemaType)
-                                                        && ((GraphSchemaType) type).getScanOpt()
-                                                                == GraphOpt.Source.EDGE
-                                                || type instanceof GraphPathType));
+                                (RelDataType type) -> {
+                                    if (input instanceof LogicalValues) return true;
+                                    return (type instanceof GraphSchemaType)
+                                                    && ((GraphSchemaType) type).getScanOpt()
+                                                            == GraphOpt.Source.EDGE
+                                            || type instanceof GraphPathType;
+                                }));
         replaceTop(getV);
         return this;
     }
@@ -221,10 +228,12 @@ public class GraphBuilder extends RelBuilder {
                         pxdConfig.getAlias(),
                         getAliasNameWithId(
                                 pxdConfig.getStartAlias(),
-                                (RelDataType type) ->
-                                        (type instanceof GraphSchemaType)
-                                                && ((GraphSchemaType) type).getScanOpt()
-                                                        == GraphOpt.Source.VERTEX));
+                                (RelDataType type) -> {
+                                    if (input instanceof LogicalValues) return true;
+                                    return (type instanceof GraphSchemaType)
+                                            && ((GraphSchemaType) type).getScanOpt()
+                                                    == GraphOpt.Source.VERTEX;
+                                }));
         replaceTop(pathExpand);
         return this;
     }
@@ -313,6 +322,8 @@ public class GraphBuilder extends RelBuilder {
      * @param opt anti or optional
      */
     public GraphBuilder match(RelNode single, GraphOpt.Match opt) {
+        // verify the hops in the sentence is valid
+        new QueryExecutionValidator(configs).validate(new LogicalPlan(single), true);
         if (FrontendConfig.GRAPH_TYPE_INFERENCE_ENABLED.get(configs)) {
             single =
                     new GraphTypeInference(
@@ -365,6 +376,9 @@ public class GraphBuilder extends RelBuilder {
         }
         Preconditions.checkArgument(
                 sentences.size() > 1, "at least two sentences are required in multiple match");
+        // verify the hops in each sentence is valid
+        sentences.forEach(
+                k -> new QueryExecutionValidator(configs).validate(new LogicalPlan(k), true));
         if (FrontendConfig.GRAPH_TYPE_INFERENCE_ENABLED.get(configs)) {
             sentences =
                     new GraphTypeInference(
@@ -490,7 +504,8 @@ public class GraphBuilder extends RelBuilder {
         String varName = AliasInference.SIMPLE_NAME(alias) + AliasInference.DELIMITER + property;
         List<ColumnField> columnFields = getAliasField(alias);
         if (columnFields.size() != 1) {
-            throw new IllegalArgumentException(
+            throw new FrontendException(
+                    Code.PROPERTY_NOT_FOUND,
                     "cannot get property="
                             + property
                             + " from alias="
@@ -502,7 +517,8 @@ public class GraphBuilder extends RelBuilder {
         RelDataTypeField aliasField = columnField.right;
         if (property.equals(GraphProperty.LEN_KEY)) {
             if (!(aliasField.getType() instanceof GraphPathType)) {
-                throw new ClassCastException(
+                throw new FrontendException(
+                        Code.PROPERTY_NOT_FOUND,
                         "cannot get property='len' from type class ["
                                 + aliasField.getType().getClass()
                                 + "], should be ["
@@ -518,7 +534,8 @@ public class GraphBuilder extends RelBuilder {
             }
         }
         if (!(aliasField.getType() instanceof GraphSchemaType)) {
-            throw new ClassCastException(
+            throw new FrontendException(
+                    Code.PROPERTY_NOT_FOUND,
                     "cannot get property=['id', 'label', 'all', 'key'] from type class ["
                             + aliasField.getType().getClass()
                             + "], should be ["
@@ -549,7 +566,8 @@ public class GraphBuilder extends RelBuilder {
                     getTypeFactory().createSqlType(SqlTypeName.ANY));
         } else if (property.equals(GraphProperty.START_V_KEY)) {
             if (!(aliasField.getType() instanceof GraphPathType)) {
-                throw new ClassCastException(
+                throw new FrontendException(
+                        Code.PROPERTY_NOT_FOUND,
                         "cannot get property='start_v' from type class ["
                                 + aliasField.getType().getClass()
                                 + "], should be ["
@@ -571,7 +589,8 @@ public class GraphBuilder extends RelBuilder {
             }
         } else if (property.equals(GraphProperty.END_V_KEY)) {
             if (!(aliasField.getType() instanceof GraphPathType)) {
-                throw new ClassCastException(
+                throw new FrontendException(
+                        Code.PROPERTY_NOT_FOUND,
                         "cannot get property='end_v' from type class ["
                                 + aliasField.getType().getClass()
                                 + "], should be ["
@@ -606,7 +625,8 @@ public class GraphBuilder extends RelBuilder {
             }
             properties.add(pField.getName());
         }
-        throw new IllegalArgumentException(
+        throw new FrontendException(
+                Code.PROPERTY_NOT_FOUND,
                 "{property="
                         + property
                         + "} "
@@ -684,7 +704,8 @@ public class GraphBuilder extends RelBuilder {
                 inputQueue.addAll(cur.getInputs());
             }
         }
-        throw new IllegalArgumentException(
+        throw new FrontendException(
+                Code.TAG_NOT_FOUND,
                 "{alias="
                         + AliasInference.SIMPLE_NAME(alias)
                         + "} "
@@ -741,6 +762,15 @@ public class GraphBuilder extends RelBuilder {
     @Override
     public RexNode call(SqlOperator operator, RexNode... operands) {
         return call_(operator, ImmutableList.copyOf(operands));
+    }
+
+    public RexNode procedureCall(
+            SqlOperator operator,
+            Iterable<? extends RexNode> operands,
+            StoredProcedureMeta procedureMeta) {
+        RexCall call = (RexCall) call(operator, operands);
+        return new RexProcedureCall(
+                call.getType(), call.getOperator(), call.getOperands(), procedureMeta);
     }
 
     @Override
@@ -853,10 +883,11 @@ public class GraphBuilder extends RelBuilder {
                 || sqlKind == SqlKind.BIT_OR
                 || sqlKind == SqlKind.BIT_XOR
                 || (sqlKind == SqlKind.OTHER
-                        && (operator.getName().equals("IN")
-                                || operator.getName().equals("DATETIME_MINUS")
-                                || operator.getName().equals("PATH_CONCAT")
-                                || operator.getName().equals("PATH_FUNCTION")))
+                                && (operator.getName().equals("IN")
+                                        || operator.getName().equals("DATETIME_MINUS")
+                                        || operator.getName().equals("PATH_CONCAT")
+                                        || operator.getName().equals("PATH_FUNCTION"))
+                        || operator.getName().startsWith(GraphFunctions.FUNCTION_PREFIX))
                 || sqlKind == SqlKind.ARRAY_CONCAT;
     }
 
@@ -1633,6 +1664,20 @@ public class GraphBuilder extends RelBuilder {
             }
             project(originalExprs, originalAliases, false);
         }
+        return this;
+    }
+
+    public GraphBuilder unfold(RexNode unfoldKey, @Nullable String aliasName) {
+        RelNode input = requireNonNull(peek(), "frame stack is empty");
+        RelDataType keyType = unfoldKey.getType();
+        Preconditions.checkArgument(
+                keyType.getComponentType() != null,
+                "input type of 'unfold' should be set or array with single component type, but is"
+                        + " [%s]",
+                keyType);
+        GraphLogicalUnfold unfold =
+                new GraphLogicalUnfold((GraphOptCluster) getCluster(), input, unfoldKey, aliasName);
+        replaceTop(unfold);
         return this;
     }
 

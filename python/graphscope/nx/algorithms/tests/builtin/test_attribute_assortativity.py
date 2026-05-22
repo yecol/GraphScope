@@ -15,8 +15,9 @@
 # information.
 #
 """
-    Unit tests for attribute assortativity coefficient.
+Unit tests for attribute assortativity coefficient.
 """
+
 import pytest
 
 from graphscope import nx

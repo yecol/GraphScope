@@ -25,6 +25,7 @@ import com.alibaba.graphscope.common.config.QueryTimeoutConfig;
 import com.alibaba.graphscope.gaia.proto.GraphAlgebraPhysical;
 import com.alibaba.graphscope.gaia.proto.IrResult;
 import com.alibaba.graphscope.gaia.proto.StoredProcedure;
+import com.alibaba.graphscope.gremlin.plugin.QueryLogger;
 import com.alibaba.graphscope.interactive.client.Session;
 import com.alibaba.graphscope.interactive.client.common.Result;
 import com.alibaba.graphscope.interactive.client.impl.DefaultSession;
@@ -52,11 +53,16 @@ public class HttpExecutionClient extends ExecutionClient<URI> {
                         HiactorConfig.INTERACTIVE_QUERY_ENDPOINT.get(graphConfig));
     }
 
+    public Session getSession() {
+        return session;
+    }
+
     @Override
     public void submit(
             ExecutionRequest request,
             ExecutionResponseListener listener,
-            QueryTimeoutConfig timeoutConfig)
+            QueryTimeoutConfig timeoutConfig,
+            QueryLogger queryLogger)
             throws Exception {
         List<CompletableFuture> responseFutures = Lists.newArrayList();
         for (URI httpURI : channelFetcher.fetch()) {

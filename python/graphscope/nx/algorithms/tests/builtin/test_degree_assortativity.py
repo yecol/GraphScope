@@ -15,8 +15,9 @@
 # information.
 #
 """
-    Unit tests for degree assortativity coefficient.
+Unit tests for degree assortativity coefficient.
 """
+
 import pytest
 
 from graphscope import nx

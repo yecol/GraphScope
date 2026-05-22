@@ -64,8 +64,8 @@ PropertyType StringToPrimitivePropertyType(const std::string& str) {
   } else if (str == "Day" || str == DT_DAY || str == "day") {
     return PropertyType::kDay;
   } else if (str == "String" || str == "STRING" || str == DT_STRING) {
-    // DT_STRING is a alias for VARCHAR(STRING_DEFAULT_MAX_LENGTH);
-    return PropertyType::Varchar(PropertyType::STRING_DEFAULT_MAX_LENGTH);
+    // DT_STRING is a alias for VARCHAR(GetStringDefaultMaxLength());
+    return PropertyType::Varchar(PropertyType::GetStringDefaultMaxLength());
   } else if (str == DT_STRINGMAP) {
     return PropertyType::kStringMap;
   } else if (str == "Empty") {
@@ -84,10 +84,44 @@ PropertyType StringToPrimitivePropertyType(const std::string& str) {
 }
 }  // namespace config_parsing
 
+static uint16_t get_string_default_max_length_env() {
+  static uint16_t max_length = 0;
+  if (max_length == 0) {
+    char* env = std::getenv("FLEX_STRING_DEFAULT_MAX_LENGTH");
+    if (env) {
+      try {
+        max_length = static_cast<uint16_t>(std::stoi(env));
+        LOG(INFO) << "FLEX_STRING_DEFAULT_MAX_LENGTH: " << max_length;
+      } catch (std::exception& e) {
+        LOG(ERROR) << "Invalid FLEX_STRING_DEFAULT_MAX_LENGTH: " << env;
+      }
+    }
+  }
+  return max_length;
+}
+
+uint16_t PropertyType::GetStringDefaultMaxLength() {
+  return get_string_default_max_length_env() > 0
+             ? get_string_default_max_length_env()
+             : PropertyType::STRING_DEFAULT_MAX_LENGTH;
+}
+
 size_t RecordView::size() const { return table->col_num(); }
 
 Any RecordView::operator[](size_t col_id) const {
   return table->get_column_by_id(col_id)->get(offset);
+}
+
+std::string RecordView::to_string() const {
+  std::string ret = "RecordView{";
+  for (size_t i = 0; i < table->col_num(); ++i) {
+    if (i > 0) {
+      ret += ", ";
+    }
+    ret += table->get_column_by_id(i)->get(offset).to_string();
+  }
+  ret += "}";
+  return ret;
 }
 
 Record::Record(size_t len) : len(len) { props = new Any[len]; }
@@ -224,6 +258,53 @@ bool PropertyType::operator!=(const PropertyType& other) const {
 
 bool PropertyType::IsVarchar() const {
   return type_enum == impl::PropertyTypeImpl::kVarChar;
+}
+
+std::string PropertyType::ToString() const {
+  switch (type_enum) {
+  case impl::PropertyTypeImpl::kEmpty:
+    return "Empty";
+  case impl::PropertyTypeImpl::kBool:
+    return "Bool";
+  case impl::PropertyTypeImpl::kUInt8:
+    return "UInt8";
+  case impl::PropertyTypeImpl::kUInt16:
+    return "UInt16";
+  case impl::PropertyTypeImpl::kInt32:
+    return "Int32";
+  case impl::PropertyTypeImpl::kUInt32:
+    return "UInt32";
+  case impl::PropertyTypeImpl::kFloat:
+    return "Float";
+  case impl::PropertyTypeImpl::kInt64:
+    return "Int64";
+  case impl::PropertyTypeImpl::kUInt64:
+    return "UInt64";
+  case impl::PropertyTypeImpl::kDouble:
+    return "Double";
+  case impl::PropertyTypeImpl::kDate:
+    return "Date";
+  case impl::PropertyTypeImpl::kDay:
+    return "Day";
+  case impl::PropertyTypeImpl::kString:
+    return "String";
+  case impl::PropertyTypeImpl::kStringView:
+    return "StringView";
+  case impl::PropertyTypeImpl::kStringMap:
+    return "StringMap";
+  case impl::PropertyTypeImpl::kVertexGlobalId:
+    return "VertexGlobalId";
+  case impl::PropertyTypeImpl::kLabel:
+    return "Label";
+  case impl::PropertyTypeImpl::kRecordView:
+    return "RecordView";
+  case impl::PropertyTypeImpl::kRecord:
+    return "Record";
+  case impl::PropertyTypeImpl::kVarChar:
+    return "VarChar";
+  default:
+    return "Unknown";
+  }
 }
 
 /////////////////////////////// Get Type Instance
@@ -508,7 +589,8 @@ Any ConvertStringToAny(const std::string& value, const gs::PropertyType& type) {
     return gs::Any(gs::Date(static_cast<int64_t>(std::stoll(value))));
   } else if (type == gs::PropertyType::Day()) {
     return gs::Any(gs::Day(static_cast<int64_t>(std::stoll(value))));
-  } else if (type == gs::PropertyType::String() || type == gs::PropertyType::StringMap()) {
+  } else if (type == gs::PropertyType::String() ||
+             type == gs::PropertyType::StringMap()) {
     return gs::Any(std::string(value));
   } else if (type == gs::PropertyType::Int64()) {
     return gs::Any(static_cast<int64_t>(std::stoll(value)));
@@ -544,9 +626,9 @@ Any ConvertStringToAny(const std::string& value, const gs::PropertyType& type) {
   } else if (type == gs::PropertyType::StringView()) {
     return gs::Any(std::string_view(value));
   } else {
-    LOG(FATAL) << "Unsupported type: " << type;
+    LOG(ERROR) << "Unsupported type: " << type.ToString();
+    return gs::Any();
   }
-  return gs::Any();
 }
 
 }  // namespace gs

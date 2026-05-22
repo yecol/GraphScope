@@ -38,6 +38,12 @@ public class YamlConfigs extends Configs {
                         (Configs configs) -> configs.get("compiler.planner.is_on"))
                 .put("graph.planner.opt", (Configs configs) -> configs.get("compiler.planner.opt"))
                 .put(
+                        "graph.planner.cbo.glogue.size",
+                        (Configs configs) -> configs.get("compiler.planner.cbo.glogue.size"))
+                .put(
+                        "graph.planner.trim.class.names",
+                        (Configs configs) -> configs.get("compiler.planner.trim_class_names"))
+                .put(
                         "graph.planner.rules",
                         (Configs configs) -> {
                             String rules = configs.get("compiler.planner.rules");
@@ -66,6 +72,15 @@ public class YamlConfigs extends Configs {
                             return configs.get("compiler.meta.reader.statistics.uri");
                         })
                 .put(
+                        "graph.functions",
+                        (Configs configs) -> {
+                            String functions = System.getProperty("graph.functions");
+                            if (functions != null) {
+                                return functions;
+                            }
+                            return configs.get("compiler.meta.reader.functions.uri");
+                        })
+                .put(
                         "graph.meta.schema.fetch.interval.ms",
                         (Configs configs) -> configs.get("compiler.meta.reader.schema.interval"))
                 .put(
@@ -73,12 +88,24 @@ public class YamlConfigs extends Configs {
                         (Configs configs) ->
                                 configs.get("compiler.meta.reader.statistics.interval"))
                 .put(
+                        "graph.meta.fetch.timeout.ms",
+                        (Configs configs) -> configs.get("compiler.meta.reader.timeout"))
+                .put(
                         "graph.store",
                         (Configs configs) -> {
                             if (configs.get("compute_engine.store.type") != null) {
                                 return configs.get("compute_engine.store.type");
                             } else {
                                 return "cpp-mcsr";
+                            }
+                        })
+                .put(
+                        "graph.physical.opt",
+                        (Configs configs) -> {
+                            if (configs.get("compiler.physical.opt.config") != null) {
+                                return configs.get("compiler.physical.opt.config");
+                            } else {
+                                return "ffi"; // default proto
                             }
                         })
                 .put(
@@ -183,13 +210,19 @@ public class YamlConfigs extends Configs {
                 .put(
                         "query.execution.timeout.ms",
                         (Configs configs) -> configs.get("compiler.query_timeout"))
+                .put(
+                        "query.execution.max.iterations",
+                        (Configs configs) -> configs.get("compiler.query_max_iterations"))
                 .put("engine.type", (Configs configs) -> configs.get("compute_engine.type"))
                 .put(
                         "calcite.default.charset",
                         (Configs configs) -> configs.get("compiler.calcite_default_charset"))
                 .put(
                         "gremlin.script.language.name",
-                        (Configs configs) -> configs.get("compiler.gremlin_script_language_name"));
+                        (Configs configs) -> configs.get("compiler.gremlin_script_language_name"))
+                .put(
+                        "graph.type.inference.enabled",
+                        (Configs configs) -> configs.get("compiler.type_inference_enabled"));
         valueGetterMap = mapBuilder.build();
     }
 

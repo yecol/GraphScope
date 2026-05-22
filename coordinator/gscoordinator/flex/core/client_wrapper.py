@@ -22,13 +22,13 @@ import os
 import threading
 from typing import List
 
+from graphscope.config import Config
+
 from gscoordinator.flex.core.config import CLUSTER_TYPE
 from gscoordinator.flex.core.config import DATASET_WORKSPACE
 from gscoordinator.flex.core.config import SOLUTION
 from gscoordinator.flex.core.datasource import DataSourceManager
 from gscoordinator.flex.core.deployment import initialize_deployemnt
-from gscoordinator.flex.core.insight import init_groot_client
-from gscoordinator.flex.core.interactive import init_hqps_client
 from gscoordinator.flex.core.utils import parse_file_metadata
 from gscoordinator.flex.models import CreateDataloadingJobResponse
 from gscoordinator.flex.models import CreateEdgeType
@@ -61,26 +61,27 @@ logger = logging.getLogger("graphscope")
 class ClientWrapper(object):
     """Wrapper of client that interacts with engine"""
 
-    def __init__(self):
+    def __init__(self, config: Config):
         # lock to protect the service
         self._lock = threading.RLock()
         # initialize specific client
-        self._client = self._initialize_client()
+        self._client = self._initialize_client(config)
         # data source management
         self._datasource_manager = DataSourceManager()
         # deployment
         self._deployment = initialize_deployemnt()
 
-    def _initialize_client(self):
-        service_initializer = {
-            "INTERACTIVE": init_hqps_client,
-            "GRAPHSCOPE_INSIGHT": init_groot_client,
-        }
-        initializer = service_initializer.get(SOLUTION)
+    def _initialize_client(self, config: Config):
+        if SOLUTION == "INTERACTIVE":
+            from gscoordinator.flex.core.interactive import init_hqps_client
+            initializer = init_hqps_client
+        elif SOLUTION == "GRAPHSCOPE_INSIGHT":
+            from gscoordinator.flex.core.insight import init_groot_client
+            initializer = init_groot_client
         if initializer is None:
-            logger.warn(f"Client initializer of {SOLUTION} not found.")
+            logger.warning(f"Client initializer of {SOLUTION} not found.")
             return None
-        return initializer()
+        return initializer(config)
 
     def list_graphs(self) -> List[GetGraphResponse]:
         graphs = self._client.list_graphs()
@@ -367,5 +368,15 @@ class ClientWrapper(object):
     def gremlin_service_available(self) -> bool:
         return self._client.gremlin_service_available()
 
+    def pod_available(self) -> bool:
+        return self._client.pod_available()
 
-client_wrapper = ClientWrapper()
+client_wrapper = None
+
+# Interactive/Insight specific configuration
+def initialize_client_wrapper(config=None):
+    global client_wrapper
+    client_wrapper = ClientWrapper(config)
+
+def get_client_wrapper():
+    return client_wrapper

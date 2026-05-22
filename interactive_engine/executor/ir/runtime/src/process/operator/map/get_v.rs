@@ -25,7 +25,7 @@ use ir_common::{KeyId, LabelId};
 use pegasus::api::function::{FilterMapFunction, FnResult};
 
 use crate::error::{FnExecError, FnExecResult, FnGenError, FnGenResult};
-use crate::process::entry::{DynEntry, Entry};
+use crate::process::entry::{DynEntry, Entry, NullEntry};
 use crate::process::operator::map::FilterMapFuncGen;
 use crate::process::record::Record;
 
@@ -117,6 +117,9 @@ impl FilterMapFunction<Record, Record> for GetVertexOperator {
                 } else {
                     Err(FnExecError::unexpected_data_error("unreachable path end entry in GetV"))?
                 }
+            } else if entry.is_none() {
+                input.append(NullEntry, self.alias);
+                Ok(Some(input))
             } else {
                 Err(FnExecError::unexpected_data_error( &format!(
                     "Can only apply `GetV` (`Auxilia` instead) on an edge or path entry, while the entry is {:?}", entry
@@ -239,6 +242,21 @@ impl FilterMapFunction<Record, Record> for AuxiliaOperator {
                     return Ok(Some(input));
                 } else {
                     return Ok(None);
+                }
+            } else if entry.is_none() {
+                if let Some(predicate) = &self.query_params.filter {
+                    let res = predicate
+                        .eval_bool(Some(&input))
+                        .map_err(|e| FnExecError::from(e))?;
+                    if res {
+                        input.append(NullEntry, self.alias);
+                        return Ok(Some(input));
+                    } else {
+                        return Ok(None);
+                    }
+                } else {
+                    input.append(NullEntry, self.alias);
+                    return Ok(Some(input));
                 }
             } else {
                 Err(FnExecError::unexpected_data_error(&format!(

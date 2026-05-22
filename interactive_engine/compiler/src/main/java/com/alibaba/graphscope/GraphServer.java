@@ -23,7 +23,6 @@ import com.alibaba.graphscope.common.client.channel.HostsRpcChannelFetcher;
 import com.alibaba.graphscope.common.config.Configs;
 import com.alibaba.graphscope.common.config.FrontendConfig;
 import com.alibaba.graphscope.common.config.GraphConfig;
-import com.alibaba.graphscope.common.ir.meta.IrMeta;
 import com.alibaba.graphscope.common.ir.meta.IrMetaTracker;
 import com.alibaba.graphscope.common.ir.meta.fetcher.DynamicIrMetaFetcher;
 import com.alibaba.graphscope.common.ir.meta.fetcher.IrMetaFetcher;
@@ -31,16 +30,18 @@ import com.alibaba.graphscope.common.ir.meta.fetcher.StaticIrMetaFetcher;
 import com.alibaba.graphscope.common.ir.meta.reader.HttpIrMetaReader;
 import com.alibaba.graphscope.common.ir.meta.reader.LocalIrMetaReader;
 import com.alibaba.graphscope.common.ir.planner.GraphRelOptimizer;
-import com.alibaba.graphscope.common.ir.tools.*;
+import com.alibaba.graphscope.common.ir.tools.GraphPlanner;
+import com.alibaba.graphscope.common.ir.tools.LogicalPlanFactory;
+import com.alibaba.graphscope.common.ir.tools.QueryCache;
+import com.alibaba.graphscope.common.ir.tools.QueryIdGenerator;
 import com.alibaba.graphscope.common.manager.IrMetaQueryCallback;
-import com.alibaba.graphscope.cypher.antlr4.parser.CypherAntlr4Parser;
-import com.alibaba.graphscope.cypher.antlr4.visitor.LogicalPlanVisitor;
+import com.alibaba.graphscope.common.metric.MemoryMetric;
+import com.alibaba.graphscope.common.metric.MetricsTool;
 import com.alibaba.graphscope.cypher.service.CypherBootstrapper;
-import com.alibaba.graphscope.gremlin.antlr4x.parser.GremlinAntlr4Parser;
-import com.alibaba.graphscope.gremlin.antlr4x.visitor.GraphBuilderVisitor;
 import com.alibaba.graphscope.gremlin.integration.result.GraphProperties;
 import com.alibaba.graphscope.gremlin.integration.result.TestGraphFactory;
 import com.alibaba.graphscope.gremlin.service.IrGremlinServer;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Resources;
 
@@ -56,6 +57,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.List;
 
 public class GraphServer {
     private static final Logger logger = LoggerFactory.getLogger(GraphServer.class);
@@ -64,6 +66,8 @@ public class GraphServer {
     private final IrMetaQueryCallback metaQueryCallback;
     private final GraphProperties testGraph;
     private final GraphRelOptimizer optimizer;
+    private final MetricsTool metricsTool;
+    private final QueryCache queryCache;
 
     private IrGremlinServer gremlinServer;
     private CypherBootstrapper cypherBootstrapper;
@@ -73,51 +77,49 @@ public class GraphServer {
             ChannelFetcher channelFetcher,
             IrMetaQueryCallback metaQueryCallback,
             GraphProperties testGraph,
-            GraphRelOptimizer optimizer) {
+            GraphRelOptimizer optimizer,
+            QueryCache queryCache) {
         this.configs = configs;
         this.channelFetcher = channelFetcher;
         this.metaQueryCallback = metaQueryCallback;
         this.testGraph = testGraph;
         this.optimizer = optimizer;
+        this.metricsTool = new MetricsTool(configs);
+        this.metricsTool.registerMetric(new MemoryMetric());
+        this.queryCache = queryCache;
     }
 
     public void start() throws Exception {
-        ExecutionClient executionClient = ExecutionClient.Factory.create(configs, channelFetcher);
+        ExecutionClient executionClient =
+                ExecutionClient.Factory.create(configs, channelFetcher, metricsTool);
         QueryIdGenerator idGenerator = new QueryIdGenerator(configs);
         if (!FrontendConfig.GREMLIN_SERVER_DISABLED.get(configs)) {
             GraphPlanner graphPlanner =
-                    new GraphPlanner(
-                            configs,
-                            (GraphBuilder builder, IrMeta irMeta, String query) ->
-                                    new LogicalPlan(
-                                            new GraphBuilderVisitor(builder)
-                                                    .visit(new GremlinAntlr4Parser().parse(query))
-                                                    .build()),
-                            optimizer);
-            QueryCache queryCache = new QueryCache(configs, graphPlanner);
+                    new GraphPlanner(configs, new LogicalPlanFactory.Gremlin(), optimizer);
             this.gremlinServer =
                     new IrGremlinServer(
                             configs,
                             idGenerator,
                             queryCache,
+                            graphPlanner,
                             executionClient,
                             channelFetcher,
                             metaQueryCallback,
-                            testGraph);
+                            testGraph,
+                            metricsTool);
             this.gremlinServer.start();
         }
         if (!FrontendConfig.NEO4J_BOLT_SERVER_DISABLED.get(configs)) {
             GraphPlanner graphPlanner =
-                    new GraphPlanner(
-                            configs,
-                            (GraphBuilder builder, IrMeta irMeta, String query) ->
-                                    new LogicalPlanVisitor(builder, irMeta)
-                                            .visit(new CypherAntlr4Parser().parse(query)),
-                            optimizer);
-            QueryCache queryCache = new QueryCache(configs, graphPlanner);
+                    new GraphPlanner(configs, new LogicalPlanFactory.Cypher(), optimizer);
             this.cypherBootstrapper =
                     new CypherBootstrapper(
-                            configs, idGenerator, metaQueryCallback, executionClient, queryCache);
+                            configs,
+                            idGenerator,
+                            metaQueryCallback,
+                            executionClient,
+                            queryCache,
+                            graphPlanner);
             Path neo4jHomePath = getNeo4jHomePath();
             this.cypherBootstrapper.start(
                     neo4jHomePath,
@@ -168,6 +170,9 @@ public class GraphServer {
         if (!FrontendConfig.GREMLIN_SERVER_DISABLED.get(configs) && this.gremlinServer != null) {
             this.gremlinServer.close();
         }
+        if (this.optimizer != null) {
+            this.optimizer.close();
+        }
     }
 
     public static void main(String[] args) throws Exception {
@@ -176,19 +181,22 @@ public class GraphServer {
         }
         Configs configs = Configs.Factory.create(args[0]);
         GraphRelOptimizer optimizer = new GraphRelOptimizer(configs);
+        QueryCache queryCache = new QueryCache(configs);
         IrMetaQueryCallback queryCallback =
-                new IrMetaQueryCallback(createIrMetaFetcher(configs, optimizer.getGlogueHolder()));
+                new IrMetaQueryCallback(
+                        createIrMetaFetcher(configs, ImmutableList.of(optimizer, queryCache)));
         GraphServer server =
                 new GraphServer(
                         configs,
                         getChannelFetcher(configs),
                         queryCallback,
                         getTestGraph(configs),
-                        optimizer);
+                        optimizer,
+                        queryCache);
         server.start();
     }
 
-    private static IrMetaFetcher createIrMetaFetcher(Configs configs, IrMetaTracker tracker)
+    private static IrMetaFetcher createIrMetaFetcher(Configs configs, List<IrMetaTracker> tracker)
             throws IOException {
         URI schemaUri = URI.create(GraphConfig.GRAPH_META_SCHEMA_URI.get(configs));
         if (schemaUri.getScheme() == null || schemaUri.getScheme().equals("file")) {

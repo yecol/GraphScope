@@ -41,18 +41,22 @@ class GraphDBSession;
 struct SessionLocalContext;
 
 struct GraphDBConfig {
+  GraphDBConfig() = default;
   GraphDBConfig(const Schema& schema_, const std::string& data_dir_,
-                int thread_num_ = 1)
+                const std::string& compiler_path_ = "", int thread_num_ = 1)
       : schema(schema_),
         data_dir(data_dir_),
+        compiler_path(compiler_path_),
         thread_num(thread_num_),
         warmup(false),
         enable_monitoring(false),
         enable_auto_compaction(false),
-        memory_level(1) {}
+        memory_level(1),
+        wal_uri("") {}
 
   Schema schema;
   std::string data_dir;
+  std::string compiler_path;
   int thread_num;
   bool warmup;
   bool enable_monitoring;
@@ -65,6 +69,9 @@ struct GraphDBConfig {
     3 - force hugepages;
   */
   int memory_level;
+  std::string wal_uri;  // Indicate the where shall we store the wal files.
+                        // could be file://{GRAPH_DATA_DIR}/wal or other scheme
+                        // that interactive supports
 };
 
 class GraphDB {
@@ -98,7 +105,7 @@ class GraphDB {
    *
    * @return graph_dir The directory of graph data.
    */
-  ReadTransaction GetReadTransaction();
+  ReadTransaction GetReadTransaction(int thread_id = 0);
 
   /** @brief Create a transaction to insert vertices and edges with a default
    * allocator.
@@ -129,13 +136,20 @@ class GraphDB {
    */
   UpdateTransaction GetUpdateTransaction(int thread_id = 0);
 
-  const MutablePropertyFragment& graph() const;
-  MutablePropertyFragment& graph();
+  inline const MutablePropertyFragment& graph() const { return graph_; }
+  inline MutablePropertyFragment& graph() { return graph_; }
 
-  const Schema& schema() const;
+  inline const Schema& schema() const { return graph_.schema(); }
 
-  std::shared_ptr<ColumnBase> get_vertex_property_column(
-      uint8_t label, const std::string& col_name) const;
+  inline std::shared_ptr<ColumnBase> get_vertex_property_column(
+      uint8_t label, const std::string& col_name) const {
+    return graph_.get_vertex_table(label).get_column(col_name);
+  }
+
+  inline std::shared_ptr<RefColumnBase> get_vertex_id_column(
+      uint8_t label) const {
+    return graph_.get_vertex_id_column(label);
+  }
 
   AppWrapper CreateApp(uint8_t app_type, int thread_id);
 
@@ -149,17 +163,24 @@ class GraphDB {
   void UpdateCompactionTimestamp(timestamp_t ts);
   timestamp_t GetLastCompactionTimestamp() const;
 
+  std::string work_dir() const { return work_dir_; }
+
+  void OutputCypherProfiles(const std::string& prefix);
+
+  inline const GraphDBConfig& config() const { return config_; }
+
  private:
   bool registerApp(const std::string& path, uint8_t index = 0);
 
-  void ingestWals(const std::vector<std::string>& wals,
-                  const std::string& work_dir, int thread_num);
+  void ingestWals(IWalParser& parser, const std::string& work_dir,
+                  int thread_num);
 
   void initApps(
       const std::unordered_map<std::string, std::pair<std::string, uint8_t>>&
           plugins);
 
-  void openWalAndCreateContexts(const std::string& data_dir_path,
+  void openWalAndCreateContexts(const GraphDBConfig& config,
+                                const std::string& data_dir,
                                 MemoryStrategy allocator_strategy);
 
   void showAppMetrics() const;
@@ -168,6 +189,7 @@ class GraphDB {
 
   friend class GraphDBSession;
 
+  GraphDBConfig config_;
   std::string work_dir_;
   SessionLocalContext* contexts_;
 

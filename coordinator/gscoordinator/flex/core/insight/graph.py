@@ -19,6 +19,7 @@
 import datetime
 import itertools
 import logging
+import time
 
 import graphscope
 from dateutil import tz
@@ -28,12 +29,18 @@ from kubernetes import config as kube_config
 
 from gscoordinator.flex.core.config import CLUSTER_TYPE
 from gscoordinator.flex.core.config import CREATION_TIME
+from gscoordinator.flex.core.config import GROOT_COORDINATOR_POD_SUFFIX
+from gscoordinator.flex.core.config import GROOT_CYPHER_PORT
+from gscoordinator.flex.core.config import GROOT_FRONTEND_POD_SUFFIX
 from gscoordinator.flex.core.config import GROOT_GREMLIN_PORT
 from gscoordinator.flex.core.config import GROOT_GRPC_PORT
 from gscoordinator.flex.core.config import GROOT_PASSWORD
+from gscoordinator.flex.core.config import GROOT_PORTAL_POD_SUFFIX
+from gscoordinator.flex.core.config import GROOT_STORE_POD_SUFFIX
 from gscoordinator.flex.core.config import GROOT_USERNAME
 from gscoordinator.flex.core.config import INSTANCE_NAME
 from gscoordinator.flex.core.config import NAMESPACE
+from gscoordinator.flex.core.insight.utils import test_cypher_endpoint
 from gscoordinator.flex.core.scheduler import schedule
 from gscoordinator.flex.core.utils import data_type_to_groot
 from gscoordinator.flex.core.utils import get_internal_ip
@@ -46,7 +53,7 @@ logger = logging.getLogger("graphscope")
 class GrootGraph(object):
     """Graph class for GraphScope store"""
 
-    def __init__(self, name, creation_time, gremlin_endpoint, grpc_endpoint):
+    def __init__(self, name, creation_time, gremlin_endpoint, grpc_endpoint, cypher_endpoint = None):
         self._id = "1"
         self._name = name
 
@@ -60,12 +67,14 @@ class GrootGraph(object):
         )
         self._g = self._conn.g()
         self._schema = self._g.schema().to_dict()
-        self._gremlin_interface = {
+        self._endpoints = {
             "gremlin_endpoint": gremlin_endpoint,
             "grpc_endpoint": grpc_endpoint,
             "username": GROOT_USERNAME,
             "password": GROOT_PASSWORD,
         }
+        self._endpoints["cypher_endpoint"] = cypher_endpoint
+            
         # kubernetes
         if CLUSTER_TYPE == "KUBERNETES":
             self._api_client = resolve_api_client()
@@ -83,8 +92,8 @@ class GrootGraph(object):
 
         try:
             # frontend statefulset and service name
-            frontend_pod_name = "{0}-graphscope-store-frontend-0".format(
-                INSTANCE_NAME
+            frontend_pod_name = "{0}-{1}-0".format(
+                INSTANCE_NAME, GROOT_FRONTEND_POD_SUFFIX
             )
             pod = self._core_api.read_namespaced_pod(frontend_pod_name, NAMESPACE)
             endpoints = [
@@ -97,23 +106,50 @@ class GrootGraph(object):
                 grpc_endpoint, gremlin_endpoint, GROOT_USERNAME, GROOT_PASSWORD
             )
             g = conn.g()
+            cypher_endpoint = test_cypher_endpoint(pod.status.pod_ip, GROOT_CYPHER_PORT)
+            
         except Exception as e:
-            logger.warn(f"Failed to fetch frontend endpoints: {str(e)}")
+            logger.warning(f"Failed to fetch frontend endpoints: {str(e)}")
         else:
             if (
-                gremlin_endpoint != self._gremlin_interface["gremlin_endpoint"]
-                or grpc_endpoint != self._gremlin_interface["grpc_endpoint"]
+                gremlin_endpoint != self._endpoints["gremlin_endpoint"]
+                or grpc_endpoint != self._endpoints["grpc_endpoint"]
+                or cypher_endpoint != self._endpoints.get("cypher_endpoint")
             ):
                 self._conn = conn
                 self._g = g
                 self._schema = self._g.schema().to_dict()
-                self._gremlin_interface = {
+                self._endpoints = {
                     "gremlin_endpoint": gremlin_endpoint,
                     "grpc_endpoint": grpc_endpoint,
                     "username": GROOT_USERNAME,
                     "password": GROOT_PASSWORD,
                 }
+                if cypher_endpoint:
+                    self._endpoints["cypher_endpoint"] = cypher_endpoint
                 logger.info(f"Update frontend endpoints: {str(endpoints)}")
+
+    def pod_available(self):
+        if CLUSTER_TYPE != "KUBERNETES":
+            return True
+        expected_prefixes = [
+            "{0}-{1}-".format(INSTANCE_NAME, GROOT_FRONTEND_POD_SUFFIX),
+            "{0}-{1}-".format(INSTANCE_NAME, GROOT_COORDINATOR_POD_SUFFIX),
+            "{0}-{1}-".format(INSTANCE_NAME, GROOT_STORE_POD_SUFFIX),
+            "{0}-{1}-".format(INSTANCE_NAME, GROOT_PORTAL_POD_SUFFIX),
+        ]
+        all_pod = self._core_api.list_namespaced_pod(NAMESPACE)
+        if len(all_pod.items) == 0:
+            raise RuntimeError("No pod found in namespace {0}".format(NAMESPACE))
+        for pod in all_pod.items:
+            for prefix in expected_prefixes:
+                if pod.metadata.name.startswith(prefix):
+                    if pod.status.phase != "Running":
+                        raise RuntimeError(
+                            "Pod {0} is not running, {1}".format(pod.metadata.name, pod.status.phase)
+                        )
+        return True
+
 
     def __del__(self):
         self._conn.close()
@@ -131,8 +167,8 @@ class GrootGraph(object):
         return self._name
 
     @property
-    def gremlin_interface(self):
-        return self._gremlin_interface
+    def groot_endpoints(self):
+        return self._endpoints
 
     @property
     def schema(self):
@@ -284,12 +320,16 @@ def get_groot_graph_from_local():
             client.close()
             break
         time.sleep(5)
+    # test whether cypher endpoint is ready
+    cypher_endpoint = test_cypher_endpoint(host, GROOT_CYPHER_PORT)
+    
     # groot graph
     return GrootGraph(
         name=INSTANCE_NAME,
         creation_time=CREATION_TIME,
         gremlin_endpoint=gremlin_endpoint,
         grpc_endpoint=grpc_endpoint,
+        cypher_endpoint=cypher_endpoint,
     )
 
 
@@ -298,14 +338,14 @@ def get_groot_graph_from_k8s():
     core_api = kube_client.CoreV1Api(api_client)
     app_api = kube_client.AppsV1Api(api_client)
     # frontend statefulset and service name
-    name = "{0}-graphscope-store-frontend".format(INSTANCE_NAME)
+    name = "{0}-{1}".format(INSTANCE_NAME, GROOT_FRONTEND_POD_SUFFIX)
     response = app_api.read_namespaced_stateful_set(name, NAMESPACE)
     # creation time
     creation_time = response.metadata.creation_timestamp.astimezone(
         tz.tzlocal()
     ).strftime("%Y/%m/%d %H:%M:%S")
     # service endpoints: [grpc_endpoint, gremlin_endpoint]
-    frontend_pod_name = "{0}-graphscope-store-frontend-0".format(INSTANCE_NAME)
+    frontend_pod_name = "{0}-{1}-0".format(INSTANCE_NAME, GROOT_FRONTEND_POD_SUFFIX)
     pod = core_api.read_namespaced_pod(frontend_pod_name, NAMESPACE)
     endpoints = [
         f"{pod.status.pod_ip}:{GROOT_GRPC_PORT}",

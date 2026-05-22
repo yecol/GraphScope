@@ -101,6 +101,16 @@ public class GrootClient implements Writer {
         return resp.getSnapshotIdList();
     }
 
+    public List<Long> replayRecordsV2(long offset, long timestamp) {
+        ReplayRecordsRequestV2 req =
+                ReplayRecordsRequestV2.newBuilder()
+                        .setOffset(offset)
+                        .setTimestamp(timestamp)
+                        .build();
+        ReplayRecordsResponseV2 resp = this.clientStub.replayRecordsV2(req);
+        return resp.getSnapshotIdList();
+    }
+
     private long modifyVertex(Vertex vertex, WriteTypePb writeType) {
         WriteRequestPb request = vertex.toWriteRequest(writeType);
         return submit(request);
@@ -703,9 +713,23 @@ public class GrootClient implements Writer {
         return response.getSuccess();
     }
 
+    public boolean compactPartition(int partitionId) {
+        CompactPartitionRequest request =
+                CompactPartitionRequest.newBuilder().setPartitionId(partitionId).build();
+        CompactPartitionResponse response = this.clientStub.compactPartition(request);
+        return response.getSuccess();
+    }
+
     public boolean reopenSecondary() {
         ReopenSecondaryRequest request = ReopenSecondaryRequest.newBuilder().build();
         ReopenSecondaryResponse response = this.clientStub.reopenSecondary(request);
+        return response.getSuccess();
+    }
+
+    public boolean updateCatchUpStatus(boolean enableCatchUpPrimary) {
+        UpdateCatchUpStatusRequest request =
+                UpdateCatchUpStatusRequest.newBuilder().setEnable(enableCatchUpPrimary).build();
+        UpdateCatchUpStatusResponse response = this.clientStub.updateCatchUpStatus(request);
         return response.getSuccess();
     }
 

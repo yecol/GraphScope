@@ -66,10 +66,32 @@
         </dependency>
         <dependency>
           <groupId>com.alibaba.graphscope</groupId>
+          <artifactId>groot-http</artifactId>
+          <version>${project.version}</version>
+        </dependency>
+        <dependency>
+          <groupId>com.alibaba.graphscope</groupId>
           <artifactId>executor</artifactId>
           <version>${project.version}</version>
         </dependency>
       </dependencies>
+    </profile>
+    <profile>
+      <id>graph-planner-jni</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-assembly-plugin</artifactId>
+            <configuration>
+              <finalName>graph-planner-jni</finalName>
+              <descriptors>
+                <descriptor>graph-planner-jni.xml</descriptor>
+              </descriptors>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
     </profile>
   </profiles>
 </project>

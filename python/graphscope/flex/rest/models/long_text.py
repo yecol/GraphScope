@@ -3,7 +3,7 @@
 """
     GraphScope FLEX HTTP SERVICE API
 
-    This is a specification for GraphScope FLEX HTTP service based on the OpenAPI 3.0 specification. You can find out more details about specification at [doc](https://swagger.io/specification/v3/).  Some useful links: - [GraphScope Repository](https://github.com/alibaba/GraphScope) - [The Source API definition for GraphScope Interactive](https://github.com/GraphScope/portal/tree/main/httpservice)
+    This is a specification for GraphScope FLEX HTTP service based on the OpenAPI 3.0 specification. You can find out more details about specification at [doc](https://swagger.io/specification/v3/).
 
     The version of the OpenAPI document: 1.0.0
     Contact: graphscope@alibaba-inc.com
@@ -18,7 +18,7 @@ import pprint
 import re  # noqa: F401
 import json
 
-from pydantic import BaseModel, StrictStr
+from pydantic import BaseModel, ConfigDict, StrictStr
 from typing import Any, ClassVar, Dict, List, Optional
 from typing import Optional, Set
 from typing_extensions import Self
@@ -30,11 +30,11 @@ class LongText(BaseModel):
     long_text: Optional[StrictStr]
     __properties: ClassVar[List[str]] = ["long_text"]
 
-    model_config = {
-        "populate_by_name": True,
-        "validate_assignment": True,
-        "protected_namespaces": (),
-    }
+    model_config = ConfigDict(
+        populate_by_name=True,
+        validate_assignment=True,
+        protected_namespaces=(),
+    )
 
 
     def to_str(self) -> str:
@@ -84,6 +84,10 @@ class LongText(BaseModel):
 
         if not isinstance(obj, dict):
             return cls.model_validate(obj)
+
+        for key in obj:
+            if key not in cls.__properties:
+                raise ValueError(f"Unexpected field {key} for LongText")
 
         _obj = cls.model_validate({
             "long_text": obj.get("long_text")

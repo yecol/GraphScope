@@ -17,10 +17,10 @@ package com.alibaba.graphscope.groot.common.config;
 
 public class CoordinatorConfig {
     public static final Config<Long> SNAPSHOT_INCREASE_INTERVAL_MS =
-            Config.longConfig("snapshot.increase.interval.ms", 1000L);
+            Config.longConfig("snapshot.increase.interval.ms", 2000L);
 
     public static final Config<Long> OFFSETS_PERSIST_INTERVAL_MS =
-            Config.longConfig("offsets.persist.interval.ms", 3000L);
+            Config.longConfig("offsets.persist.interval.ms", 1000L);
 
     public static final Config<Boolean> LOG_RECYCLE_ENABLE =
             Config.boolConfig("log.recycle.enable", false);

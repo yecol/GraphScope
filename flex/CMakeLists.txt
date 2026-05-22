@@ -14,6 +14,10 @@ option(BUILD_TEST "Whether to build test" ON)
 option(BUILD_DOC "Whether to build doc" OFF)
 option(BUILD_ODPS_FRAGMENT_LOADER "Whether to build odps fragment loader" OFF)
 option(USE_PTHASH "Whether to use pthash" OFF)
+option(OPTIMIZE_FOR_HOST "Whether to optimize on host" ON) # Whether to build optimized code on host
+option(USE_STATIC_ARROW "Whether to use static arrow" OFF) # Whether to link arrow statically, default is OFF
+option(BUILD_WITH_OTEL "Whether to build with opentelemetry-cpp" OFF) # Whether to build with opentelemetry-cpp, default is OFF
+option(BUILD_WITH_OSS "Whether to build with oss support" OFF) # Whether to build with oss support, default is OFF
 
 #print options
 message(STATUS "Build test: ${BUILD_TEST}")
@@ -48,6 +52,13 @@ if(LINUX_KERNEL_VERSION VERSION_GREATER_EQUAL "4.5")
     add_definitions(-DUSE_COPY_FILE_RANGE)
 endif()
 
+if (BUILD_WITH_OSS)
+    add_definitions(-DBUILD_WITH_OSS)
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party/aliyun-oss-cpp-sdk/sdk/include)
+    set(TARGET_OUTPUT_NAME_PREFIX "alibabacloud-oss-" CACHE STRING "The target's output name prefix")
+    add_subdirectory(third_party/aliyun-oss-cpp-sdk)
+endif()
+
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../)
 
 if(USE_PTHASH)
@@ -76,10 +87,13 @@ else ()
     endif ()
 endif ()
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp -Werror -std=c++17 -Wall -fPIC -march=native")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp -Werror -std=c++17 -Wall -fPIC")
+if (OPTIMIZE_FOR_HOST)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
+endif()
 
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -O0 -g")
-set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -g")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
 
 find_package(MPI REQUIRED)
 include_directories(SYSTEM ${MPI_CXX_INCLUDE_PATH})
@@ -120,6 +134,7 @@ find_package(Boost REQUIRED COMPONENTS system filesystem
              # required by folly
              context program_options regex thread date_time)
 add_definitions("-DBOOST_BIND_GLOBAL_PLACEHOLDERS")
+include_directories(SYSTEM ${Boost_INCLUDE_DIRS})
 
 #find hiactor----------------------------------------------------------------------
 find_package(Hiactor)
@@ -135,23 +150,39 @@ if (NOT Arrow_FOUND)
     message(FATAL_ERROR "arrow not found, please install the arrow library")
 else ()
     include_directories(SYSTEM ${ARROW_INCLUDE_DIR})
-    if (TARGET arrow_shared)
-        set(ARROW_SHARED_LIB arrow_shared)
-    endif()
-    if (TARGET arrow_static)
-        set(ARROW_STATIC_LIB arrow_static)
+    if (USE_STATIC_ARROW)
+        if (TARGET Arrow::arrow_static)
+            set(ARROW_LIB Arrow::arrow_static)
+        elseif (TARGET arrow_static) # For backward compatibility, see https://arrow.apache.org/docs/cpp/build_system.html#available-variables-and-targets
+            set(ARROW_LIB arrow_static)
+        else()
+            message(FATAL_ERROR "Building with USE_STATIC_ARROW=ON, but arrow_static target not found")
+        endif()
+    else ()
+        if (TARGET Arrow::arrow_shared)
+            set(ARROW_LIB Arrow::arrow_shared)
+        elseif (TARGET arrow_shared) # For backward compatibility
+            set(ARROW_LIB arrow_shared)
+        else()
+            message(FATAL_ERROR "Building with USE_STATIC_ARROW=OFF, but arrow_shared target not found")
+        endif()
     endif()
 endif ()
 
-find_package(opentelemetry-cpp CONFIG)
-if (OPENTELEMETRY_CPP_FOUND)
-    message(STATUS "opentelemetry-cpp found")
-    find_package(Protobuf REQUIRED)
-    find_package(CURL REQUIRED)
-    add_definitions(-DHAVE_OPENTELEMETRY_CPP)
-else()
-    message(STATUS "opentelemetry-cpp not found, build without opentelemetry-cpp")
-endif ()
+#find protobuf-------------------------------------------------------------------
+find_package(Protobuf REQUIRED)
+include_directories(${Protobuf_INCLUDE_DIRS})
+
+if (BUILD_WITH_OTEL)
+    find_package(opentelemetry-cpp CONFIG)
+    if (OPENTELEMETRY_CPP_FOUND)
+        message(STATUS "opentelemetry-cpp found")
+        find_package(CURL REQUIRED)
+        add_definitions(-DHAVE_OPENTELEMETRY_CPP)
+    else()
+        message(STATUS "opentelemetry-cpp not found, build without opentelemetry-cpp")
+    endif ()
+endif()
 
 # Find Doxygen
 if (BUILD_DOC)
@@ -169,17 +200,22 @@ if (BUILD_DOC)
     endif(DOXYGEN_FOUND)
 endif()
 
+find_package(RapidJSON REQUIRED)
+if (DEFINED RapidJSON_INCLUDE_DIRS)  # rapidjson > 1.1.0
+    include_directories(${RapidJSON_INCLUDE_DIRS})
+else ()  # rapidjson <= 1.1.0
+    include_directories(${RAPIDJSON_INCLUDE_DIRS})
+endif ()
 
-# Check whether ${CMAKE_SOURCE_DIR}/third_party/single_include/nlohmann/json.hpp exists
-if (NOT EXISTS ${CMAKE_SOURCE_DIR}/third_party/nlohmann-json/single_include/nlohmann/json.hpp)
-    message(FATAL_ERROR "${CMAKE_SOURCE_DIR}/third_party/nlohmann-json/single_include/nlohmann/json.hpp not found, "
-                         "please run `git submodule update --init` to download third_party")
-endif()
-include_directories(SYSTEM ${CMAKE_SOURCE_DIR}/third_party/nlohmann-json/single_include)
+add_definitions(-DRAPIDJSON_HAS_CXX11=1)
+add_definitions(-DRAPIDJSON_HAS_STDSTRING=1)
+add_definitions(-DRAPIDJSON_HAS_CXX11_RVALUE_REFS=1)
+add_definitions(-DRAPIDJSON_HAS_CXX11_RANGE_FOR=1)
 
 if (BUILD_ODPS_FRAGMENT_LOADER)
     include_directories(SYSTEM ${CMAKE_SOURCE_DIR}/third_party/odps/include)
 endif()
+include_directories(SYSTEM ${CMAKE_SOURCE_DIR}/third_party/parallel-hashmap)
 
 macro(install_flex_target target)
     install(TARGETS ${target}
@@ -204,7 +240,7 @@ add_subdirectory(storages)
 add_subdirectory(engines)
 add_subdirectory(bin)
 if (OPENTELEMETRY_CPP_FOUND)
-    add_subdirectory(otel)
+   add_subdirectory(otel)
 endif()
 if (BUILD_TEST)
    add_subdirectory(tests)
@@ -229,6 +265,8 @@ install(EXPORT flex-targets
 file(GLOB_RECURSE FILES_NEED_LINT
         "engines/*.cc"
         "engines/*.h"
+        "codegen/*.cc"
+        "codegen/*.h"
         "bin/*.cc"
         "storages/*.h"
         "storages/*.cc"
@@ -236,6 +274,8 @@ file(GLOB_RECURSE FILES_NEED_LINT
         "otel/*.cc"
         "test/*.h"
         "test/*.cc"
+        "utils/*.h"
+        "utils/*.cc"
         EXCEPT "*.act.h" "*.actg.h" "*.autogen.h" "*.autogen.cc")
 list(FILTER FILES_NEED_LINT EXCLUDE REGEX ".*\.act.h$|.*\.actg.h$|.*\.autogen.h$|.*\.autogen.cc$")
 # gsa_clformat
@@ -261,8 +301,6 @@ set(CPACK_DEB_COMPONENT_INSTALL YES)
 
 #install CMakeLists.txt.template to resources/
 install(FILES resources/hqps/CMakeLists.txt.template DESTINATION lib/flex/)
-#install header-only nlohmann-json.hpp to include/
-install(FILES ${CMAKE_SOURCE_DIR}/third_party/nlohmann-json/single_include/nlohmann/json.hpp DESTINATION include/nlohmann)
 
 if(USE_PTHASH)
     install(DIRECTORY ${PROJECT_SOURCE_DIR}/third_party/murmurhash
