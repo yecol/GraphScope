@@ -1,7 +1,7 @@
 name: PR Check
 
 on:
-  pull_request_target:
+  pull_request:
     branches:
       - main
 
@@ -221,7 +221,7 @@ jobs:
 
     - name: Comments if Docs not present/changed while required
       uses: marocchino/sticky-pull-request-comment@v2
-      if: ${{ ( github.event.pull_request.title == 'feat.*' || github.event.pull_request.title == 'refactor.*' ) && steps.doc-changes.outputs.docs == 'false' }}
+      if: ${{ (startsWith(github.event.pull_request.title, 'feat') || startsWith(github.event.pull_request.title, 'refactor')) && steps.changes.outputs.docs == 'false' }}
       with:
         header: pr-docs-change-required
         message: |
